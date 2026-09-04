@@ -342,9 +342,11 @@ function displayContacts() {
     
     if (contacts.length === 0) {
         contactsList.innerHTML = `
-            <div style="text-align: center; padding: 40px; color: #718096;">
-                <p style="margin-bottom: 20px;">No contacts yet</p>
-                <button class="btn-primary" onclick="openAddContact()">
+            <div class="empty-state">
+                <div class="empty-state-icon">👋</div>
+                <p class="empty-state-title">No contacts yet</p>
+                <p class="empty-state-text">Add someone by phone number to start chatting.</p>
+                <button class="btn-primary empty-state-btn" onclick="openAddContact()">
                     Add your first contact
                 </button>
             </div>
