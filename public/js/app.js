@@ -16,9 +16,37 @@ document.addEventListener('DOMContentLoaded', () => {
     initializeSocketEvents();
 });
 
-// Check if user is authenticated
+// ==================== SESSION STORAGE ====================
+// The app is often loaded inside an iframe (preview panels) or with
+// third-party cookies/storage blocked, where localStorage writes can throw or
+// be silently partitioned away. Losing the token there logged the user out
+// immediately after a successful sign-in, so keep an in-memory copy as the
+// source of truth and treat localStorage as best-effort persistence only.
+let memoryStore = { token: null, userData: null };
+
+const safeStorage = {
+    get(key) {
+        if (memoryStore[key] != null) return memoryStore[key];
+        try {
+            const v = localStorage.getItem(key);
+            if (v != null) memoryStore[key] = v;
+            return v;
+        } catch (e) {
+            return null;
+        }
+    },
+    set(key, value) {
+        memoryStore[key] = value;
+        try { localStorage.setItem(key, value); } catch (e) { /* non-fatal */ }
+    },
+    remove(key) {
+        memoryStore[key] = null;
+        try { localStorage.removeItem(key); } catch (e) { /* non-fatal */ }
+    }
+};
+
 function getToken() {
-    const t = localStorage.getItem('token');
+    const t = safeStorage.get('token');
     return (!t || t === 'null' || t === 'undefined') ? null : t;
 }
 
@@ -47,8 +75,8 @@ async function apiFetch(url, options = {}) {
 }
 
 function forceLogout(message) {
-    localStorage.removeItem('token');
-    localStorage.removeItem('userData');
+    safeStorage.remove('token');
+    safeStorage.remove('userData');
     currentUser = null;
     currentConversation = null;
     currentContact = null;
@@ -59,7 +87,7 @@ function forceLogout(message) {
 
 function checkAuthentication() {
     const token = getToken();
-    const userData = localStorage.getItem('userData');
+    const userData = safeStorage.get('userData');
     
     // Both must be present, otherwise the session is broken -> clear it.
     if (token && userData) {
@@ -153,12 +181,13 @@ async function handleLogin(e) {
         const data = await response.json();
         
         if (response.ok) {
-            localStorage.setItem('token', data.token);
-            localStorage.setItem('userData', JSON.stringify(data.user));
+            safeStorage.set('token', data.token);
+            safeStorage.set('userData', JSON.stringify(data.user));
             currentUser = data.user;
             showChatInterface();
             await initializeChat();
-            showToast('Welcome back!', 'success');
+            // Don't overwrite a session error toast with a success message.
+            if (currentUser) showToast('Welcome back!', 'success');
         } else {
             showToast(data.error || 'Login failed', 'error');
         }
@@ -200,12 +229,12 @@ async function handleRegister(e) {
         const data = await response.json();
         
         if (response.ok) {
-            localStorage.setItem('token', data.token);
-            localStorage.setItem('userData', JSON.stringify(data.user));
+            safeStorage.set('token', data.token);
+            safeStorage.set('userData', JSON.stringify(data.user));
             currentUser = data.user;
             showChatInterface();
             await initializeChat();
-            showToast('Account created successfully!', 'success');
+            if (currentUser) showToast('Account created successfully!', 'success');
         } else {
             showToast(data.error || 'Registration failed', 'error');
         }
@@ -221,12 +250,12 @@ function logout() {
         fetch('/api/auth/logout', {
             method: 'POST',
             headers: {
-                'Authorization': `Bearer ${localStorage.getItem('token')}`
+                'Authorization': `Bearer ${getToken()}`
             }
         });
         
-        localStorage.removeItem('token');
-        localStorage.removeItem('userData');
+        safeStorage.remove('token');
+        safeStorage.remove('userData');
         
         if (socket) {
             socket.disconnect();
