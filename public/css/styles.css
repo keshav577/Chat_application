@@ -1,5 +1,4 @@
 /* Modern Chat Application Styles */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 
 * {
     margin: 0;
@@ -23,7 +22,7 @@
 }
 
 body {
-    font-family: 'Inter', -apple-system, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     height: 100vh;
     overflow: hidden;
@@ -469,6 +468,7 @@ body {
 }
 
 .chat-view {
+    position: relative;
     flex: 1;
     display: flex;
     flex-direction: column;
@@ -876,4 +876,66 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
     background: var(--dark);
+}
+
+/* Emoji Picker */
+.emoji-picker {
+    position: absolute;
+    right: 20px;
+    bottom: 62px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    width: 260px;
+    max-height: 150px;
+    overflow-y: auto;
+    padding: 8px;
+    background: var(--white);
+    border: 1px solid var(--light-gray);
+    border-radius: 12px;
+    box-shadow: var(--shadow-lg);
+    z-index: 30;
+}
+
+.emoji-btn {
+    border: none;
+    background: transparent;
+    font-size: 22px;
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 8px;
+    line-height: 1;
+}
+
+.emoji-btn:hover {
+    background: var(--light-gray);
+}
+
+/* Message attachments */
+.message-attachment {
+    max-width: 260px;
+    max-height: 260px;
+    border-radius: 10px;
+    display: block;
+    margin-bottom: 4px;
+}
+
+.message-file {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.2);
+    color: inherit;
+    text-decoration: none;
+}
+
+.received .message-file {
+    background: var(--light-gray);
+    color: var(--dark);
+}
+
+.message-file:hover {
+    text-decoration: underline;
 }

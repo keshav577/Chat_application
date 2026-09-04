@@ -52,6 +52,24 @@ function setupEventListeners() {
         searchContacts(e.target.value);
     });
     
+    // File attachment
+    document.getElementById('fileInput').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (file) uploadFile(file);
+        e.target.value = '';
+    });
+    
+    // Emoji picker
+    buildEmojiPicker();
+    
+    // Close emoji picker when clicking outside
+    document.addEventListener('click', (e) => {
+        const picker = document.getElementById('emojiPicker');
+        if (picker && !e.target.closest('#emojiPicker') && !e.target.closest('[onclick="openEmoji()"]')) {
+            picker.style.display = 'none';
+        }
+    });
+    
     // Close modals on backdrop click
     document.querySelectorAll('.modal').forEach(modal => {
         modal.addEventListener('click', (e) => {
@@ -211,14 +229,14 @@ async function initializeChat() {
     updateUserProfile();
     await loadContacts();
     connectSocket();
+    initializeSocketEvents();
 }
 
 function updateUserProfile() {
     document.getElementById('userName').textContent = currentUser.name;
     document.getElementById('userStatus').textContent = 'Online';
     
-    const avatarUrl = currentUser.avatar || 
-        `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUser.name)}&background=FF6B6B&color=fff`;
+    const avatarUrl = currentUser.avatar || createAvatarDataUri(currentUser.name, '#FF6B6B');
     document.getElementById('profileImg').src = avatarUrl;
 }
 
@@ -226,15 +244,28 @@ function updateUserProfile() {
 function connectSocket() {
     socket = io();
     
-    socket.emit('authenticate', currentUser.id);
-    
     socket.on('connect', () => {
         console.log('Connected to server');
+        socket.emit('authenticate', currentUser.id);
     });
     
     socket.on('disconnect', () => {
         console.log('Disconnected from server');
     });
+}
+
+// ==================== LOCAL AVATARS (no external API) ====================
+function createAvatarDataUri(name, background) {
+    const initials = (name || '?')
+        .trim()
+        .split(/\s+/)
+        .slice(0, 2)
+        .map(part => part.charAt(0).toUpperCase())
+        .join('') || '?';
+
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96"><rect width="96" height="96" rx="48" fill="${background}"/><text x="48" y="48" dy="0.35em" font-family="Arial, sans-serif" font-size="34" font-weight="bold" fill="#fff" text-anchor="middle">${initials}</text></svg>`;
+
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }
 
 function initializeSocketEvents() {
@@ -323,22 +354,23 @@ function displayContacts() {
 function createContactElement(contact) {
     const div = document.createElement('div');
     div.className = 'contact-item';
+    div.dataset.contactId = contact.contact_id;
     div.onclick = () => openConversation(contact);
     
     const avatarUrl = contact.avatar || 
-        `https://ui-avatars.com/api/?name=${encodeURIComponent(contact.contact_name || contact.user_name)}&background=667eea&color=fff`;
+        createAvatarDataUri(contact.contact_name || contact.user_name, '#667eea');
     
     const lastMessageTime = contact.last_message_time ? 
         formatMessageTime(contact.last_message_time) : '';
     
     div.innerHTML = `
         <div style="position: relative;">
-            <img src="${avatarUrl}" alt="${contact.contact_name}" class="contact-avatar">
+            <img src="${avatarUrl}" alt="${escapeHtml(contact.contact_name || contact.user_name)}" class="contact-avatar">
             ${contact.is_online ? '<span class="online-indicator"></span>' : ''}
         </div>
         <div class="contact-info">
-            <div class="contact-name">${contact.contact_name || contact.user_name}</div>
-            <div class="last-message">${contact.last_message || 'No messages yet'}</div>
+            <div class="contact-name">${escapeHtml(contact.contact_name || contact.user_name)}</div>
+            <div class="last-message">${escapeHtml(contact.last_message || 'No messages yet')}</div>
         </div>
         <div class="contact-meta">
             <div class="message-time">${lastMessageTime}</div>
@@ -430,7 +462,7 @@ async function openConversation(contact) {
     document.getElementById('contactName').textContent = contactName;
     
     const avatarUrl = contact.avatar || 
-        `https://ui-avatars.com/api/?name=${encodeURIComponent(contactName)}&background=667eea&color=fff`;
+        createAvatarDataUri(contactName, '#667eea');
     document.getElementById('contactImg').src = avatarUrl;
     
     const statusText = contact.is_online ? 'Online' : 
@@ -444,7 +476,11 @@ async function openConversation(contact) {
     document.querySelectorAll('.contact-item').forEach(item => {
         item.classList.remove('active');
     });
-    event.currentTarget.classList.add('active');
+    document.querySelectorAll('.contact-item').forEach(item => {
+        if (item.dataset.contactId === String(contact.contact_id)) {
+            item.classList.add('active');
+        }
+    });
     
     // Focus on message input
     document.getElementById('messageInput').focus();
@@ -517,9 +553,30 @@ function createMessageElement(message) {
     const time = formatMessageTime(message.created_at);
     const editedText = message.is_edited ? ' (edited)' : '';
     
+    let contentHtml = `<div class="message-text">${escapeHtml(message.message || '')}</div>`;
+    
+    if (message.type === 'file' && message.file_url) {
+        const fileName = message.message || 'File';
+        const isImage = /\.(png|jpe?g|gif|webp|svg)$/i.test(fileName);
+        const isVideo = /\.(mp4|webm|ogg)$/i.test(fileName);
+        const isAudio = /\.(mp3|wav|m4a|ogg)$/i.test(fileName);
+        
+        if (isImage) {
+            contentHtml = `<a href="${message.file_url}" target="_blank"><img src="${message.file_url}" alt="${escapeHtml(fileName)}" class="message-attachment"></a>`;
+        } else if (isVideo) {
+            contentHtml = `<video class="message-attachment" controls src="${message.file_url}"></video>`;
+        } else if (isAudio) {
+            contentHtml = `<audio class="message-attachment" controls src="${message.file_url}"></audio>`;
+        } else {
+            contentHtml = `<a class="message-file" href="${message.file_url}" target="_blank" download>
+                📄 <span>${escapeHtml(fileName)}</span>
+            </a>`;
+        }
+    }
+    
     div.innerHTML = `
         <div class="message-bubble">
-            <div class="message-text">${escapeHtml(message.message)}</div>
+            ${contentHtml}
             <div class="message-info">
                 <span class="message-time">${time}${editedText}</span>
                 ${isSent ? getMessageStatusIcon(message) : ''}
@@ -583,16 +640,7 @@ async function sendMessage() {
         
         if (response.ok) {
             const newMessage = await response.json();
-            
-            // Add message to UI
-            const messageElement = createMessageElement(newMessage);
-            document.getElementById('messagesArea').appendChild(messageElement);
-            
-            // Scroll to bottom
-            const messagesArea = document.getElementById('messagesArea');
-            messagesArea.scrollTop = messagesArea.scrollHeight;
-            
-            // Update contact list with last message
+            appendMessageToUi(newMessage);
             updateContactLastMessage(currentContact.contact_id, message);
         } else {
             showToast('Failed to send message', 'error');
@@ -602,6 +650,88 @@ async function sendMessage() {
         showToast('Connection error', 'error');
         messageInput.value = message; // Restore message if failed
     }
+}
+
+function appendMessageToUi(message) {
+    const messageElement = createMessageElement(message);
+    document.getElementById('messagesArea').appendChild(messageElement);
+    const messagesArea = document.getElementById('messagesArea');
+    messagesArea.scrollTop = messagesArea.scrollHeight;
+}
+
+// ==================== FILE + EMOJI ====================
+async function uploadFile(file) {
+    if (!currentContact) {
+        showToast('Select a contact first', 'warning');
+        return;
+    }
+
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        const uploadRes = await fetch('/api/upload', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+            body: formData
+        });
+        
+        const uploadData = await uploadRes.json();
+        if (!uploadRes.ok) throw new Error(uploadData.error || 'Upload failed');
+        
+        const sendRes = await fetch('/api/messages/send', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${localStorage.getItem('token')}`
+            },
+            body: JSON.stringify({
+                receiverId: currentContact.contact_id,
+                message: file.name,
+                type: 'file',
+                fileUrl: uploadData.url
+            })
+        });
+        
+        const newMessage = await sendRes.json();
+        if (!sendRes.ok) throw new Error(newMessage.error || 'Send failed');
+        
+        appendMessageToUi(newMessage);
+        updateContactLastMessage(currentContact.contact_id, file.name);
+        showToast('File sent', 'success');
+    } catch (error) {
+        console.error('Upload error:', error);
+        showToast(error.message || 'Failed to send file', 'error');
+    }
+}
+
+function buildEmojiPicker() {
+    const emojis = ['😀','😁','😂','🤣','😊','😍','😘','😎','🤔','😴','😢','😭','😡','👍','👎','👏','🙏','💪','🔥','❤️','😉','🤗','🤩','🥳','😇','🙃','😅','😬','🤫','🤭','😔'];
+    const picker = document.getElementById('emojiPicker');
+    picker.innerHTML = '';
+    
+    emojis.forEach((emoji) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'emoji-btn';
+        btn.textContent = emoji;
+        btn.onclick = () => {
+            const input = document.getElementById('messageInput');
+            input.value += emoji;
+            input.focus();
+            picker.style.display = 'none';
+        };
+        picker.appendChild(btn);
+    });
+}
+
+function openEmoji() {
+    const picker = document.getElementById('emojiPicker');
+    picker.style.display = picker.style.display === 'none' ? 'flex' : 'none';
+}
+
+function openAttachment() {
+    document.getElementById('fileInput').click();
 }
 
 // ==================== MESSAGE ACTIONS ====================
@@ -700,9 +830,55 @@ function copyMessage() {
     document.getElementById('messageMenu').style.display = 'none';
 }
 
-function forwardMessage() {
-    // Implement forward functionality
-    showToast('Forward feature coming soon', 'warning');
+async function forwardMessage() {
+    const messageElement = document.querySelector(`[data-message-id="${selectedMessageId}"]`);
+    const messageText = messageElement ? messageElement.querySelector('.message-text')?.textContent : '';
+
+    if (!contacts.length) {
+        showToast('No contacts to forward to', 'warning');
+        document.getElementById('messageMenu').style.display = 'none';
+        return;
+    }
+
+    const list = contacts.map((c, i) => `${i + 1}. ${c.contact_name || c.user_name} (${c.phone})`).join('\n');
+    const answer = prompt(`Forward to:\n\n${list}\n\nEnter a number or full phone:`);
+
+    if (!answer || !answer.trim()) {
+        document.getElementById('messageMenu').style.display = 'none';
+        return;
+    }
+
+    const contact = contacts.find((c) => c.phone === answer.trim() || String(c.contact_id) === answer.trim());
+    if (!contact) {
+        showToast('Contact not found', 'error');
+        document.getElementById('messageMenu').style.display = 'none';
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/messages/send', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${localStorage.getItem('token')}`
+            },
+            body: JSON.stringify({
+                receiverId: contact.contact_id,
+                message: messageText,
+                type: 'text'
+            })
+        });
+
+        if (response.ok) {
+            showToast('Message forwarded', 'success');
+            await loadContacts();
+        } else {
+            showToast('Failed to forward message', 'error');
+        }
+    } catch (error) {
+        showToast('Connection error', 'error');
+    }
+
     document.getElementById('messageMenu').style.display = 'none';
 }
 
@@ -951,29 +1127,60 @@ function showNotification(message) {
     
     // Show notification if permitted
     if (Notification.permission === 'granted') {
-        const notification = new Notification('New Message', {
-            body: `${message.sender_name}: ${message.message}`,
-            icon: '/icon-192x192.png',
-            badge: '/badge-72x72.png',
-            vibrate: [200, 100, 200]
-        });
-        
-        notification.onclick = () => {
-            window.focus();
-            const contact = contacts.find(c => c.contact_id === message.sender_id);
-            if (contact) {
-                openConversation(contact);
-            }
-            notification.close();
-        };
-        
-        setTimeout(() => notification.close(), 5000);
+        try {
+            const notification = new Notification('New Message', {
+                body: `${message.sender_name}: ${message.message || 'Sent you a file'}`,
+                vibrate: [200, 100, 200]
+            });
+            
+            notification.onclick = () => {
+                window.focus();
+                const contact = contacts.find(c => c.contact_id === message.sender_id);
+                if (contact) {
+                    openConversation(contact);
+                }
+                notification.close();
+            };
+            
+            setTimeout(() => notification.close(), 5000);
+        } catch (error) {
+            console.error('Notification error:', error);
+        }
     }
 }
 
 // ==================== ADDITIONAL FEATURES ====================
-function openSettings() {
-    showToast('Settings feature coming soon', 'warning');
+async function openSettings() {
+    const name = prompt('Your display name:', currentUser.name || '');
+    if (name === null) return;
+
+    const bio = prompt('Your status / bio:', currentUser.bio || 'Hey there! I am using ChatApp');
+    if (bio === null) return;
+
+    try {
+        const response = await fetch('/api/user/profile', {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${localStorage.getItem('token')}`
+            },
+            body: JSON.stringify({ name, bio })
+        });
+
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Failed to update profile');
+
+        currentUser.name = data.user.name;
+        currentUser.bio = data.user.bio;
+        currentUser.avatar = data.user.avatar;
+        localStorage.setItem('userData', JSON.stringify(currentUser));
+
+        updateUserProfile();
+        await loadContacts();
+        showToast('Profile updated', 'success');
+    } catch (error) {
+        showToast(error.message || 'Failed to update profile', 'error');
+    }
 }
 
 function makeCall(type) {
@@ -981,15 +1188,28 @@ function makeCall(type) {
 }
 
 function openChatMenu() {
-    showToast('Chat menu coming soon', 'warning');
+    if (confirm('Clear this chat for yourself? This cannot be undone.')) {
+        clearCurrentChat();
+    }
 }
 
-function openAttachment() {
-    showToast('File attachment feature coming soon', 'warning');
-}
-
-function openEmoji() {
-    showToast('Emoji picker coming soon', 'warning');
+async function clearCurrentChat() {
+    if (!currentConversation) return;
+    try {
+        const response = await fetch(`/api/conversations/${currentConversation}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+        });
+        if (response.ok) {
+            document.getElementById('messagesArea').innerHTML = '';
+            showToast('Chat cleared', 'success');
+            await loadContacts();
+        } else {
+            showToast('Failed to clear chat', 'error');
+        }
+    } catch (error) {
+        showToast('Connection error', 'error');
+    }
 }
 
 // ==================== ERROR HANDLING ====================

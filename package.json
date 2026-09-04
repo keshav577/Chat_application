@@ -4,9 +4,9 @@
   "description": "Professional real-time chat application",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js",
-    "init-db": "node database.js"
+    "start": "node --no-warnings server.js",
+    "dev": "nodemon --no-warnings server.js",
+    "init-db": "node --no-warnings database.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -17,8 +17,7 @@
     "express-session": "^1.17.3",
     "jsonwebtoken": "^9.0.0",
     "multer": "^1.4.5-lts.1",
-    "socket.io": "^4.6.1",
-    "sqlite3": "^5.1.6"
+    "socket.io": "^4.6.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.10"

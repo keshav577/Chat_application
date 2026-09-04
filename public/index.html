@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ChatConnect - Modern Messaging Platform</title>
-    <link rel="stylesheet" href="css/styles.css">
+    <link rel="stylesheet" href="/css/styles.css">
 </head>
 <body>
     <!-- Login/Register Screen -->
@@ -81,7 +81,7 @@
         <aside class="sidebar">
             <header class="sidebar-header">
                 <div class="user-profile">
-                    <img src="https://ui-avatars.com/api/?name=User&background=FF6B6B&color=fff" alt="Profile" class="profile-img" id="profileImg">
+                    <img src="" alt="Profile" class="profile-img" id="profileImg">
                     <div class="profile-info">
                         <h3 id="userName">User Name</h3>
                         <p id="userStatus">Online</p>
@@ -160,12 +160,14 @@
                     </div>
                 </div>
 
+                <div class="emoji-picker" id="emojiPicker" style="display: none;"></div>
                 <footer class="message-input-area">
-                    <button class="btn-icon" onclick="openAttachment()">📎</button>
+                    <button class="btn-icon" onclick="openAttachment()" title="Attach file">📎</button>
                     <input type="text" placeholder="Type a message..." id="messageInput" class="message-input">
-                    <button class="btn-icon" onclick="openEmoji()">😊</button>
+                    <button class="btn-icon" onclick="openEmoji()" title="Emoji">😊</button>
                     <button class="btn-send" onclick="sendMessage()">➤</button>
                 </footer>
+                <input type="file" id="fileInput" style="display: none;">
             </div>
         </main>
     </div>
@@ -207,6 +209,6 @@
     <div class="toast" id="toast"></div>
 
     <script src="/socket.io/socket.io.js"></script>
-    <script src="js/app.js"></script>
+    <script src="/js/app.js"></script>
 </body>
 </html>
