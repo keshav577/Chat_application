@@ -14,6 +14,12 @@ const db = require('./database');
 
 const app = express();
 const server = http.createServer(app);
+
+// Secrets: fall back to local-development values when .env is missing,
+// so the app never breaks with "Server error" after a fresh clone/restart.
+const JWT_SECRET = process.env.JWT_SECRET || 'chatconnect-local-dev-jwt-secret';
+const SESSION_SECRET = process.env.SESSION_SECRET || 'chatconnect-local-dev-session-secret';
+
 const io = socketIo(server, {
     cors: {
         origin: '*',
@@ -35,7 +41,7 @@ app.use('/uploads', express.static(UPLOADS_DIR));
 
 // Session configuration
 app.use(session({
-    secret: process.env.SESSION_SECRET || 'secret-key',
+    secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     cookie: {
@@ -81,7 +87,7 @@ const verifyToken = (req, res, next) => {
     if (!token) {
         return res.status(401).json({ error: 'No token provided' });
     }
-    jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+    jwt.verify(token, JWT_SECRET, (err, decoded) => {
         if (err) {
             return res.status(403).json({ error: 'Invalid token' });
         }
@@ -115,7 +121,7 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
 
         const token = jwt.sign(
             { id: userId, phone, name },
-            process.env.JWT_SECRET,
+            JWT_SECRET,
             { expiresIn: '7d' }
         );
 
@@ -150,7 +156,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 
         const token = jwt.sign(
             { id: user.id, phone: user.phone, name: user.name },
-            process.env.JWT_SECRET,
+            JWT_SECRET,
             { expiresIn: '7d' }
         );
 
