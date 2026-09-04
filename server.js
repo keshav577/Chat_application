@@ -13,6 +13,8 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
+const crypto = require('crypto');
 const { Server } = require('socket.io');
 
 const db = require('./db');
@@ -26,11 +28,17 @@ fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' }, maxHttpBufferSize: 1e7 });
+const io = new Server(server, {
+    cors: { origin: true, credentials: true },
+    maxHttpBufferSize: 1e7
+});
 
-app.use(cors());
+// Reflect the requesting origin and allow credentials, so the session cookie
+// is accepted when the app is embedded in an iframe on another domain.
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
 
 // ---------------------------------------------------------------- static ----
 
@@ -74,16 +82,76 @@ const upload = multer({
 // ------------------------------------------------------------------ auth ----
 
 function sign(user) {
-    return jwt.sign({ id: user.id, phone: user.phone, name: user.name }, JWT_SECRET, {
-        expiresIn: '30d'
+    // jti makes every issued token unique, so signing in again after a
+    // sign-out never reuses a revoked token.
+    return jwt.sign({
+        id: user.id,
+        phone: user.phone,
+        name: user.name,
+        jti: crypto.randomBytes(12).toString('hex')
+    }, JWT_SECRET, { expiresIn: '30d' });
+}
+
+// Session cookie. Set by the server (HttpOnly) so it survives the browser
+// clearing localStorage/sessionStorage — which is routine for a site running
+// inside a cross-origin iframe, and used to log people out after a minute.
+const COOKIE = 'cc_session';
+const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+
+function setSessionCookie(res, token) {
+    res.cookie(COOKIE, token, {
+        httpOnly: true,
+        sameSite: 'none',   // required for the app to work inside an iframe
+        secure: true,       // SameSite=None demands Secure
+        maxAge: THIRTY_DAYS,
+        path: '/'
+    });
+    // Fallback for plain http://localhost, where a Secure cookie is dropped.
+    res.cookie(COOKIE + '_lax', token, {
+        httpOnly: true,
+        sameSite: 'lax',
+        maxAge: THIRTY_DAYS,
+        path: '/'
     });
 }
 
-function auth(req, res, next) {
+// Tokens invalidated by an explicit sign-out. Belt-and-braces: clearing the
+// cookie should be enough, but a client that still presents one must not be
+// let back in. Entries are dropped once the token would have expired anyway.
+const revoked = new Map(); // token -> expiry ms
+
+function revoke(token) {
+    if (!token) return;
+    revoked.set(token, Date.now() + THIRTY_DAYS);
+    if (revoked.size > 5000) {
+        const now = Date.now();
+        for (const [t, exp] of revoked) if (exp < now) revoked.delete(t);
+    }
+}
+
+function clearSessionCookie(res) {
+    res.clearCookie(COOKIE, { path: '/', sameSite: 'none', secure: true });
+    res.clearCookie(COOKIE + '_lax', { path: '/', sameSite: 'lax' });
+}
+
+// Accepts the token from the Authorization header or, if the browser has
+// dropped web storage, from the session cookie.
+function readToken(req) {
     const header = req.headers.authorization || '';
-    const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+    if (header.startsWith('Bearer ')) {
+        const t = header.slice(7);
+        if (t && t !== 'null' && t !== 'undefined') return t;
+    }
+    return (req.cookies && (req.cookies[COOKIE] || req.cookies[COOKIE + '_lax'])) || null;
+}
+
+function auth(req, res, next) {
+    const token = readToken(req);
     if (!token || token === 'null' || token === 'undefined') {
         return res.status(401).json({ error: 'Not signed in' });
+    }
+    if (revoked.has(token)) {
+        return res.status(401).json({ error: 'Session expired' });
     }
     try {
         req.user = jwt.verify(token, JWT_SECRET);
@@ -129,7 +197,9 @@ app.post('/api/auth/register', wrap(async (req, res) => {
     );
 
     const user = await db.get('SELECT * FROM users WHERE id = ?', [lastID]);
-    res.json({ token: sign(user), user: publicUser(user) });
+    const token = sign(user);
+    setSessionCookie(res, token);
+    res.json({ token, user: publicUser(user) });
 }));
 
 app.post('/api/auth/login', wrap(async (req, res) => {
@@ -141,8 +211,16 @@ app.post('/api/auth/login', wrap(async (req, res) => {
         return res.status(401).json({ error: 'Wrong phone number or password' });
     }
 
-    res.json({ token: sign(user), user: publicUser(user) });
+    const token = sign(user);
+    setSessionCookie(res, token);
+    res.json({ token, user: publicUser(user) });
 }));
+
+app.post('/api/auth/logout', (req, res) => {
+    revoke(readToken(req));
+    clearSessionCookie(res);
+    res.json({ ok: true });
+});
 
 app.get('/api/me', auth, wrap(async (req, res) => {
     const user = await db.get('SELECT * FROM users WHERE id = ?', [req.user.id]);
@@ -385,7 +463,14 @@ app.post('/api/upload', auth, (req, res) => {
 const online = new Map(); // userId -> Set(socketId)
 
 io.use((socket, next) => {
-    const token = socket.handshake.auth && socket.handshake.auth.token;
+    let token = socket.handshake.auth && socket.handshake.auth.token;
+    // Fall back to the session cookie when web storage has been cleared.
+    if (!token || token === 'null' || token === 'undefined') {
+        const raw = socket.handshake.headers.cookie || '';
+        const hit = raw.match(new RegExp('(?:^|; )' + COOKIE + '(?:_lax)?=([^;]*)'));
+        token = hit ? decodeURIComponent(hit[1]) : null;
+    }
+    if (revoked.has(token)) return next(new Error('unauthorized'));
     try {
         socket.user = jwt.verify(token, JWT_SECRET);
         next();

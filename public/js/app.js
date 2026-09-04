@@ -73,7 +73,10 @@ const token = () => store.get('token');
 // not a reason to destroy a login.
 async function tokenStillValid(t) {
     try {
-        const res = await fetch('/api/me', { headers: { Authorization: `Bearer ${t}` } });
+        const res = await fetch('/api/me', {
+            headers: t ? { Authorization: `Bearer ${t}` } : {},
+            credentials: 'include'
+        });
         return res.status !== 401;
     } catch {
         return true;
@@ -92,6 +95,10 @@ async function api(path, options = {}) {
         opts.headers['Content-Type'] = 'application/json';
         if (typeof opts.body !== 'string') opts.body = JSON.stringify(opts.body);
     }
+
+    // Always send the session cookie: it is the only credential that survives
+    // the browser clearing web storage, which iframes do routinely.
+    opts.credentials = 'include';
 
     let res;
     try {
@@ -225,6 +232,9 @@ function showApp() {
 }
 
 function signOut(expired) {
+    // Also drop the server-side session cookie, or the next page load would
+    // silently sign the user straight back in.
+    try { fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }); } catch {}
     store.clear('token');
     store.clear('me');
     if (state.socket) { try { state.socket.disconnect(); } catch {} }
@@ -238,7 +248,29 @@ function signOut(expired) {
 
 async function boot() {
     const saved = store.get('me');
-    if (!token() || !saved) { showAuth(); return; }
+
+    // No token in web storage does NOT mean signed out: an iframe may have
+    // cleared it. The HttpOnly session cookie is sent automatically, so ask
+    // the server before deciding — this is what stopped the app dropping the
+    // user back to the login form a minute after signing in.
+    if (!token() || !saved) {
+        $('splash').hidden = false;
+        $('authScreen').hidden = true;
+        try {
+            const me = await api('/api/me');
+            state.me = me;
+            store.set('me', JSON.stringify(me));
+            $('splash').hidden = true;
+            showApp();
+            paintMe();
+            connectSocket();
+            await loadContacts();
+        } catch {
+            $('splash').hidden = true;
+            showAuth();
+        }
+        return;
+    }
 
     try {
         state.me = JSON.parse(saved);
@@ -335,6 +367,7 @@ function connectSocket() {
     // stale and the socket can never authenticate again after a server
     // restart — leaving the app connected-looking but permanently dead.
     const socket = io({
+        withCredentials: true,
         auth: (cb) => cb({ token: token() }),
         reconnectionAttempts: Infinity,
         reconnectionDelayMax: 5000

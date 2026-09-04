@@ -135,6 +135,45 @@ const unauthorized = () => new Response('{"error":"Session expired"}',
         chk('login form never flashed', authAppeared === 0);
     }
 
+    console.log('\n--- session survives the browser clearing web storage ---');
+    {
+        // An HttpOnly cookie is invisible to page scripts, so this is verified
+        // at the HTTP level: it is the only credential that outlives an iframe
+        // wiping localStorage, which was logging users out ~a minute in.
+        const phone = rnd();
+        const reg = await fetch(B + '/api/auth/register', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone, name: 'Cookie Tester', password: 'pass1234' })
+        });
+        const setCookie = reg.headers.getSetCookie ? reg.headers.getSetCookie() : [];
+        chk('server issues a session cookie', setCookie.some(c => /cc_session=/.test(c)));
+        chk('cookie is HttpOnly', setCookie.some(c => /HttpOnly/i.test(c)));
+
+        const jar = setCookie.map(c => c.split(';')[0]).join('; ');
+        // No Authorization header at all - the cookie alone must authenticate.
+        chk('cookie alone authenticates',
+            (await fetch(B + '/api/me', { headers: { cookie: jar } })).status === 200);
+        chk('no credentials still rejected', (await fetch(B + '/api/me')).status === 401);
+
+        const out = await fetch(B + '/api/auth/logout', { method: 'POST', headers: { cookie: jar } });
+        chk('logout succeeds', out.status === 200);
+        chk('token rejected after logout',
+            (await fetch(B + '/api/me', { headers: { cookie: jar } })).status === 401);
+
+        const again = await fetch(B + '/api/auth/login', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone, password: 'pass1234' })
+        });
+        const jar2 = (again.headers.getSetCookie ? again.headers.getSetCookie() : [])
+            .map(c => c.split(';')[0]).join('; ');
+        chk('can sign in again after logout',
+            (await fetch(B + '/api/me', { headers: { cookie: jar2 } })).status === 200);
+
+        const src = await (await fetch(B + '/js/app.js')).text();
+        chk('client sends credentials', /credentials:\s*'include'/.test(src));
+        chk('socket sends credentials', /withCredentials:\s*true/.test(src));
+    }
+
     console.log('\n--- socket must be able to reconnect (app opened then went dead) ---');
     {
         const src = await (await fetch(B + '/js/app.js')).text();
