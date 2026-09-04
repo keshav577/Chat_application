@@ -70,7 +70,7 @@ function checkAuthentication() {
             return;
         }
         showChatInterface();
-        initializeChat();
+        initializeChat().catch(err => console.error('Init failed:', err));
     } else {
         forceLogout();
     }
@@ -157,7 +157,7 @@ async function handleLogin(e) {
             localStorage.setItem('userData', JSON.stringify(data.user));
             currentUser = data.user;
             showChatInterface();
-            initializeChat();
+            await initializeChat();
             showToast('Welcome back!', 'success');
         } else {
             showToast(data.error || 'Login failed', 'error');
@@ -204,7 +204,7 @@ async function handleRegister(e) {
             localStorage.setItem('userData', JSON.stringify(data.user));
             currentUser = data.user;
             showChatInterface();
-            initializeChat();
+            await initializeChat();
             showToast('Account created successfully!', 'success');
         } else {
             showToast(data.error || 'Registration failed', 'error');
@@ -287,8 +287,12 @@ function switchTab(tab, evt) {
 
 // ==================== CHAT INITIALIZATION ====================
 async function initializeChat() {
+    if (!currentUser) return;
     updateUserProfile();
     await loadContacts();
+    // loadContacts() may have invalidated the session (expired token), which
+    // clears currentUser -- so re-check before touching currentUser.id.
+    if (!currentUser) return;
     connectSocket();
 }
 
@@ -303,6 +307,8 @@ function updateUserProfile() {
 
 // ==================== SOCKET CONNECTION ====================
 function connectSocket() {
+    if (!currentUser) return;
+    if (socket) { try { socket.disconnect(); } catch (e) {} }
     socket = io();
     
     socket.emit('authenticate', currentUser.id);
@@ -366,10 +372,15 @@ async function loadContacts() {
         if (response.ok) {
             contacts = await response.json();
             displayContacts();
+            return true;
         }
+        return false;
     } catch (error) {
+        // A dead session already triggered forceLogout(); don't nag the user
+        // with a second, misleading error toast.
         console.error('Failed to load contacts:', error);
-        showToast('Failed to load contacts', 'error');
+        if (currentUser) showToast('Failed to load contacts', 'error');
+        return false;
     }
 }
 
@@ -1178,13 +1189,19 @@ function openEmoji() {
 
 // ==================== ERROR HANDLING ====================
 window.addEventListener('error', (e) => {
-    console.error('Global error:', e);
-    showToast('Something went wrong. Please refresh the page.', 'error');
+    // Ignore failed images/assets (e.g. offline avatar CDN) -- those must not
+    // pop a scary full-page error toast.
+    if (e.target && e.target !== window) return;
+    console.error('Global error:', e.error || e.message);
 });
 
 window.addEventListener('unhandledrejection', (e) => {
-    console.error('Unhandled promise rejection:', e);
-    showToast('Connection error. Please check your internet.', 'error');
+    // Only claim a network problem when the browser is actually offline --
+    // otherwise this masks real application errors behind a wrong message.
+    console.error('Unhandled promise rejection:', e.reason || e);
+    if (!navigator.onLine) {
+        showToast('You appear to be offline. Check your connection.', 'error');
+    }
 });
 
 // ==================== PAGE VISIBILITY ====================
