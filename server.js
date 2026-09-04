@@ -236,6 +236,25 @@ app.put('/api/user/profile', verifyToken, upload.single('avatar'), (req, res) =>
 // ===================== CONTACT ROUTES =====================
 
 // Add contact
+// Search registered users by name or phone (excludes self)
+app.get('/api/users/search', verifyToken, (req, res) => {
+    const q = (req.query.q || '').trim();
+    if (q.length < 2) return res.json([]);
+    const like = `%${q}%`;
+    db.all(
+        `SELECT u.id, u.name, u.phone, u.avatar, u.bio, u.is_online,
+                EXISTS(SELECT 1 FROM contacts c WHERE c.user_id = ? AND c.contact_id = u.id) AS is_contact
+         FROM users u
+         WHERE u.id != ? AND (u.name LIKE ? OR u.phone LIKE ?)
+         ORDER BY u.name LIMIT 20`,
+        [req.userId, req.userId, like, like],
+        (err, rows) => {
+            if (err) return res.status(500).json({ error: 'Search failed' });
+            res.json(rows || []);
+        }
+    );
+});
+
 app.post('/api/contacts/add', verifyToken, (req, res) => {
     const { phone, name } = req.body;
     

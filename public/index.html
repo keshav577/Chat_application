@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>ChatConnect - Modern Messaging Platform</title>
     <link rel="stylesheet" href="css/styles.css">
 </head>
@@ -29,8 +29,8 @@
                 </div>
 
                 <div class="auth-tabs">
-                    <button class="tab-btn active" onclick="switchTab('login')">Sign In</button>
-                    <button class="tab-btn" onclick="switchTab('register')">Create Account</button>
+                    <button class="tab-btn active" onclick="switchTab('login', event)">Sign In</button>
+                    <button class="tab-btn" onclick="switchTab('register', event)">Create Account</button>
                 </div>
 
                 <form id="loginForm" class="auth-form active">
@@ -77,6 +77,7 @@
 
     <!-- Main Chat Interface -->
     <div class="chat-interface" id="chatInterface" style="display: none;">
+        <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
         <!-- Sidebar -->
         <aside class="sidebar">
             <header class="sidebar-header">
@@ -110,6 +111,7 @@
         <main class="chat-area">
             <!-- Welcome Screen -->
             <div class="welcome-screen" id="welcomeScreen">
+                <button class="btn-menu" onclick="openSidebar()" aria-label="Open chats">&#9776;</button>
                 <div class="welcome-content">
                     <div class="welcome-illustration">
                         <svg viewBox="0 0 200 200" width="150" height="150">
@@ -135,6 +137,7 @@
             <div class="chat-view" id="chatView" style="display: none;">
                 <header class="chat-header">
                     <div class="chat-info">
+                        <button class="btn-back" onclick="closeConversation()" aria-label="Back to chats">&#8592;</button>
                         <img src="" alt="Contact" class="contact-img" id="contactImg">
                         <div class="contact-details">
                             <h3 id="contactName">Contact Name</h3>
@@ -175,22 +178,27 @@
     <div class="modal" id="addContactModal">
         <div class="modal-content">
             <div class="modal-header">
-                <h3>Add New Contact</h3>
-                <button class="btn-close" onclick="closeModal('addContactModal')">×</button>
+                <div>
+                    <h3>Add People</h3>
+                    <p class="modal-subtitle">Search by name or phone number</p>
+                </div>
+                <button class="btn-close" onclick="closeModal('addContactModal')" aria-label="Close">&times;</button>
             </div>
             <div class="modal-body">
-                <div class="form-group">
-                    <input type="tel" id="contactPhone" placeholder=" " required>
-                    <label>Phone Number</label>
+                <div class="people-search">
+                    <span class="people-search-icon">&#128269;</span>
+                    <input type="text" id="peopleSearchInput" autocomplete="off"
+                           placeholder="Type a name or phone number...">
+                    <button type="button" class="people-search-clear" id="peopleSearchClear"
+                            onclick="clearPeopleSearch()" aria-label="Clear">&times;</button>
                 </div>
-                <div class="form-group">
-                    <input type="text" id="contactName" placeholder=" ">
-                    <label>Name (Optional)</label>
+                <div class="people-results" id="peopleResults">
+                    <div class="people-empty">
+                        <div class="people-empty-icon">&#128101;</div>
+                        <p class="people-empty-title">Find someone to chat with</p>
+                        <p class="people-empty-text">Start typing at least 2 characters to search registered users.</p>
+                    </div>
                 </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn-secondary" onclick="closeModal('addContactModal')">Cancel</button>
-                <button class="btn-primary" onclick="addContact()">Add Contact</button>
             </div>
         </div>
     </div>

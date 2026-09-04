@@ -442,6 +442,7 @@ body {
 }
 
 .welcome-screen {
+    position: relative;
     flex: 1;
     display: flex;
     align-items: center;
@@ -836,28 +837,324 @@ body {
     }
 }
 
-/* Responsive Design */
+
+/* ==================== ADD PEOPLE MODAL ==================== */
+.modal-subtitle {
+    font-size: 13px;
+    color: var(--gray);
+    margin-top: 2px;
+}
+
+.people-search {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.people-search-icon {
+    position: absolute;
+    left: 14px;
+    font-size: 15px;
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+.people-search input {
+    width: 100%;
+    padding: 13px 40px 13px 42px;
+    border: 2px solid var(--light-gray);
+    border-radius: 12px;
+    font-size: 15px;
+    font-family: inherit;
+    background: #F8FAFC;
+    transition: border-color 0.2s, background 0.2s;
+}
+
+.people-search input:focus {
+    outline: none;
+    border-color: var(--primary);
+    background: var(--white);
+}
+
+.people-search-clear {
+    position: absolute;
+    right: 10px;
+    width: 24px;
+    height: 24px;
+    border: none;
+    border-radius: 50%;
+    background: var(--light-gray);
+    color: var(--gray);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    display: none;
+    align-items: center;
+    justify-content: center;
+}
+
+.people-search-clear.visible { display: flex; }
+.people-search-clear:hover { background: var(--danger); color: var(--white); }
+
+.people-results {
+    margin-top: 16px;
+    max-height: 340px;
+    min-height: 220px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+/* Result row */
+.person-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    transition: background 0.2s;
+}
+
+.person-row:hover { background: #F8FAFC; }
+
+.person-avatar-wrap { position: relative; flex-shrink: 0; }
+
+.person-avatar {
+    width: 46px;
+    height: 46px;
+    border-radius: 50%;
+    object-fit: cover;
+}
+
+.person-info { flex: 1; min-width: 0; }
+
+.person-name {
+    font-weight: 600;
+    font-size: 15px;
+    color: var(--dark);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.person-phone {
+    font-size: 13px;
+    color: var(--gray);
+    margin-top: 2px;
+}
+
+.btn-add, .btn-added {
+    flex-shrink: 0;
+    padding: 9px 18px;
+    border: none;
+    border-radius: 20px;
+    font-size: 14px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s, opacity 0.2s;
+}
+
+.btn-add {
+    background: linear-gradient(135deg, var(--primary), var(--secondary));
+    color: var(--white);
+}
+
+.btn-add:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 10px rgba(102, 126, 234, 0.4);
+}
+
+.btn-add:disabled { opacity: 0.6; cursor: default; }
+
+.btn-added {
+    background: var(--light-gray);
+    color: var(--primary);
+}
+
+.btn-added:hover { background: #E2E8F0; }
+
+/* Empty / idle states */
+.people-empty {
+    text-align: center;
+    padding: 44px 20px;
+}
+
+.people-empty-icon { font-size: 40px; margin-bottom: 10px; }
+
+.people-empty-title {
+    font-weight: 600;
+    color: var(--dark);
+    margin-bottom: 6px;
+}
+
+.people-empty-text {
+    font-size: 13.5px;
+    color: var(--gray);
+    line-height: 1.5;
+    max-width: 300px;
+    margin: 0 auto;
+}
+
+/* Loading skeletons */
+.people-skeletons { padding: 4px 12px; }
+
+.people-skeleton {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 0;
+}
+
+.sk-avatar, .sk-line {
+    background: linear-gradient(90deg, #EDF2F7 25%, #E2E8F0 50%, #EDF2F7 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.2s infinite;
+}
+
+.sk-avatar { width: 46px; height: 46px; border-radius: 50%; flex-shrink: 0; }
+.sk-lines { flex: 1; }
+.sk-line { height: 11px; border-radius: 6px; margin-bottom: 8px; }
+.sk-line.short { width: 45%; margin-bottom: 0; }
+
+@keyframes shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+}
+
+/* ==================== MOBILE NAV CONTROLS ==================== */
+.btn-back, .btn-menu {
+    display: none;
+    border: none;
+    background: transparent;
+    font-size: 22px;
+    cursor: pointer;
+    color: var(--dark);
+    padding: 6px 10px;
+    border-radius: 8px;
+    line-height: 1;
+}
+
+.btn-back:active, .btn-menu:active { background: var(--light-gray); }
+
+.btn-menu {
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    z-index: 5;
+}
+
+.sidebar-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 998;
+}
+
+/* ==================== RESPONSIVE ==================== */
+
+/* Tablets */
+@media (max-width: 1024px) {
+    .sidebar { width: 300px; }
+}
+
+/* Phones */
 @media (max-width: 768px) {
+    body { height: 100dvh; }
+    .chat-interface { height: 100dvh; position: relative; }
+
+    /* Sidebar becomes a slide-over panel */
     .sidebar {
         position: fixed;
-        left: -100%;
-        top: 0;
-        height: 100%;
-        z-index: 999;
-        transition: left 0.3s ease;
-    }
-
-    .sidebar.open {
         left: 0;
+        top: 0;
+        width: 86%;
+        max-width: 340px;
+        height: 100dvh;
+        z-index: 999;
+        transform: translateX(-100%);
+        transition: transform 0.28s ease;
+        box-shadow: 4px 0 24px rgba(0, 0, 0, 0.18);
     }
 
-    .chat-area {
+    .sidebar.open { transform: translateX(0); }
+    .sidebar-overlay.active { display: block; }
+
+    .chat-area { width: 100%; }
+
+    /* Show the mobile affordances */
+    .btn-back, .btn-menu { display: block; }
+
+    .chat-header { padding: 12px 14px; }
+    .chat-info { gap: 8px; }
+    .contact-img { width: 40px; height: 40px; }
+    .contact-details h3 { font-size: 15px; }
+    .contact-details p { font-size: 12px; }
+
+    /* Calls are placeholders; keep only the overflow menu to save space */
+    .chat-actions .btn-icon:not(:last-child) { display: none; }
+
+    .message-bubble { max-width: 82%; }
+    .messages-area { padding: 14px; }
+
+    /* Comfortable, thumb-friendly composer that clears the home indicator */
+    .message-input-area {
+        padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+        gap: 6px;
+    }
+
+    /* 16px prevents iOS Safari from zooming on focus */
+    .message-input { font-size: 16px; padding: 11px 16px; }
+
+    .btn-send { width: 42px; height: 42px; flex-shrink: 0; }
+
+    /* Modal turns into a bottom sheet */
+    .modal { align-items: flex-end; }
+
+    .modal-content {
         width: 100%;
+        max-width: 100%;
+        border-radius: 20px 20px 0 0;
+        max-height: 92dvh;
+        display: flex;
+        flex-direction: column;
+        animation: sheetUp 0.28s ease;
+        padding-bottom: env(safe-area-inset-bottom);
     }
 
-    .message-bubble {
-        max-width: 80%;
+    .modal-body { overflow-y: auto; }
+    .people-results { max-height: none; }
+    .people-search input { font-size: 16px; }
+
+    @keyframes sheetUp {
+        from { transform: translateY(100%); }
+        to { transform: translateY(0); }
     }
+
+    /* Toasts span the top so they're readable on narrow screens */
+    .toast {
+        top: 12px;
+        left: 12px;
+        right: 12px;
+        text-align: center;
+        font-size: 14px;
+    }
+
+    .fab { bottom: 20px; right: 20px; }
+    .auth-box { padding: 28px 22px; }
+    .form-group input, .btn-submit { font-size: 16px; }
+}
+
+/* Small phones */
+@media (max-width: 380px) {
+    .person-name { font-size: 14px; }
+    .btn-add, .btn-added { padding: 8px 14px; font-size: 13px; }
+    .profile-info h3 { font-size: 15px; }
+}
+
+/* Respect reduced-motion preferences */
+@media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
 
 /* Scrollbar Styling */
