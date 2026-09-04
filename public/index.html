@@ -1,271 +1,254 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>ChatConnect - Modern Messaging Platform</title>
-    <link rel="stylesheet" href="css/styles.css?v=__V__">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b141a">
+<title>ChatConnect</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="css/styles.css?v=__V__">
 </head>
 <body>
-    <!-- Login/Register Screen -->
-    <div class="auth-screen" id="authScreen">
-        <div class="auth-container">
-            <div class="auth-box">
-                <div class="logo-section">
-                    <div class="logo">
-                        <svg viewBox="0 0 100 100" width="80" height="80">
-                            <defs>
-                                <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
-                                    <stop offset="0%" style="stop-color:#FF6B6B;stop-opacity:1" />
-                                    <stop offset="100%" style="stop-color:#4ECDC4;stop-opacity:1" />
-                                </linearGradient>
-                            </defs>
-                            <path d="M50 10 C 80 10, 90 30, 90 50 C 90 70, 80 90, 50 90 C 20 90, 10 70, 10 50 C 10 30, 20 10, 50 10 Z" fill="url(#grad1)"/>
-                            <text x="50" y="60" font-size="30" fill="white" text-anchor="middle">CC</text>
-                        </svg>
-                    </div>
-                    <h1>ChatConnect</h1>
-                    <p>Connect with anyone, anywhere</p>
-                </div>
 
-                <div class="auth-tabs">
-                    <button class="tab-btn active" onclick="switchTab('login', event)">Sign In</button>
-                    <button class="tab-btn" onclick="switchTab('register', event)">Create Account</button>
-                </div>
+<!-- ============================ AUTH ============================ -->
+<section class="auth" id="authScreen">
+  <div class="auth-card">
+    <div class="brand">
+      <div class="brand-mark">
+        <svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true">
+          <path fill="currentColor" d="M12 2a10 10 0 0 0-8.7 14.9L2 22l5.3-1.4A10 10 0 1 0 12 2Z"/>
+        </svg>
+      </div>
+      <h1>ChatConnect</h1>
+      <p>Simple, secure, real-time messaging</p>
+    </div>
 
-                <form id="loginForm" class="auth-form active">
-                    <div class="form-group">
-                        <input type="tel" id="loginPhone" placeholder=" " required>
-                        <label>Phone Number</label>
-                        <span class="input-icon">📱</span>
-                    </div>
-                    <div class="form-group">
-                        <input type="password" id="loginPassword" placeholder=" " required>
-                        <label>Password</label>
-                        <span class="input-icon">🔐</span>
-                    </div>
-                    <button type="submit" class="btn-submit">
-                        <span>Sign In</span>
-                        <div class="loading-spinner"></div>
-                    </button>
-                </form>
+    <div class="tabs" role="tablist">
+      <button class="tab is-active" id="tabSignin" role="tab">Sign in</button>
+      <button class="tab" id="tabSignup" role="tab">Create account</button>
+    </div>
 
-                <form id="registerForm" class="auth-form">
-                    <div class="form-group">
-                        <input type="text" id="registerName" placeholder=" " required>
-                        <label>Full Name</label>
-                        <span class="input-icon">👤</span>
-                    </div>
-                    <div class="form-group">
-                        <input type="tel" id="registerPhone" placeholder=" " required>
-                        <label>Phone Number</label>
-                        <span class="input-icon">📱</span>
-                    </div>
-                    <div class="form-group">
-                        <input type="password" id="registerPassword" placeholder=" " required>
-                        <label>Password</label>
-                        <span class="input-icon">🔐</span>
-                    </div>
-                    <button type="submit" class="btn-submit">
-                        <span>Create Account</span>
-                        <div class="loading-spinner"></div>
-                    </button>
-                </form>
-            </div>
+    <form class="form is-active" id="signinForm" novalidate>
+      <label class="field">
+        <span>Phone number</span>
+        <input type="tel" id="siPhone" inputmode="tel" autocomplete="username" placeholder="9876543210" required>
+      </label>
+      <label class="field">
+        <span>Password</span>
+        <input type="password" id="siPass" autocomplete="current-password" placeholder="••••••••" required>
+      </label>
+      <button class="btn-primary" type="submit" id="siBtn">Sign in</button>
+    </form>
+
+    <form class="form" id="signupForm" novalidate>
+      <label class="field">
+        <span>Your name</span>
+        <input type="text" id="suName" autocomplete="name" placeholder="Keshav" required>
+      </label>
+      <label class="field">
+        <span>Phone number</span>
+        <input type="tel" id="suPhone" inputmode="tel" autocomplete="username" placeholder="9876543210" required>
+      </label>
+      <label class="field">
+        <span>Password</span>
+        <input type="password" id="suPass" autocomplete="new-password" placeholder="At least 6 characters" required>
+      </label>
+      <button class="btn-primary" type="submit" id="suBtn">Create account</button>
+    </form>
+  </div>
+</section>
+
+<!-- ============================ APP ============================ -->
+<section class="app" id="appScreen" hidden>
+
+  <!-- ---------- sidebar ---------- -->
+  <aside class="sidebar" id="sidebar">
+    <header class="side-head">
+      <button class="avatar-btn" id="meAvatarBtn" title="Your profile">
+        <img id="meAvatar" alt="Me">
+      </button>
+      <div class="side-title">
+        <strong id="meName">You</strong>
+        <span id="meAbout">Available</span>
+      </div>
+      <button class="icon-btn" id="logoutBtn" title="Sign out" aria-label="Sign out">
+        <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M16 17v-3H9v-4h7V7l5 5-5 5M14 2a2 2 0 0 1 2 2v2h-2V4H5v16h9v-2h2v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9Z"/></svg>
+      </button>
+    </header>
+
+    <div class="search-row">
+      <div class="search">
+        <svg viewBox="0 0 24 24" width="17" height="17"><path fill="currentColor" d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.6-.6 3.1-1.6 4.2l.3.3h.8l5 5-1.5 1.5-5-5v-.8l-.3-.3A6.5 6.5 0 1 1 9.5 3m0 2a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9Z"/></svg>
+        <input type="text" id="chatSearch" placeholder="Search chats" autocomplete="off">
+      </div>
+    </div>
+
+    <div class="chat-list" id="chatList"></div>
+
+    <button class="fab" id="newChatBtn" title="New chat" aria-label="New chat">
+      <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2m-7 9v3h-2v-3H8V9h3V6h2v3h3v2h-3Z"/></svg>
+    </button>
+  </aside>
+
+  <!-- ---------- main ---------- -->
+  <main class="main">
+    <div class="empty" id="emptyState">
+      <button class="icon-btn only-mobile back-to-list" id="openSidebarBtn" aria-label="Open chats">
+        <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M3 6h18v2H3V6m0 5h18v2H3v-2m0 5h18v2H3v-2Z"/></svg>
+      </button>
+      <div class="empty-art">
+        <svg viewBox="0 0 24 24" width="72" height="72"><path fill="currentColor" d="M12 2a10 10 0 0 0-8.7 14.9L2 22l5.3-1.4A10 10 0 1 0 12 2Z"/></svg>
+      </div>
+      <h2>ChatConnect</h2>
+      <p>Select a chat to start messaging, or tap the new-chat button to find someone.</p>
+    </div>
+
+    <div class="chat" id="chatView" hidden>
+      <header class="chat-head">
+        <button class="icon-btn only-mobile" id="backBtn" aria-label="Back">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M20 11H7.8l5.6-5.6L12 4l-8 8 8 8 1.4-1.4L7.8 13H20v-2Z"/></svg>
+        </button>
+        <img class="chat-avatar" id="peerAvatar" alt="">
+        <div class="chat-who">
+          <strong id="peerName">—</strong>
+          <span id="peerStatus">offline</span>
         </div>
-    </div>
+        <button class="icon-btn" id="callAudioBtn" title="Voice call" aria-label="Voice call">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.2.4 2.4.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1A17 17 0 0 1 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1l-2.3 2.2Z"/></svg>
+        </button>
+        <button class="icon-btn" id="callVideoBtn" title="Video call" aria-label="Video call">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M17 10.5V7a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3.5l4 4v-11l-4 4Z"/></svg>
+        </button>
+        <button class="icon-btn" id="clearChatBtn" title="Clear chat" aria-label="Clear chat">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M9 3v1H4v2h16V4h-5V3H9M6 8v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V8H6Z"/></svg>
+        </button>
+      </header>
 
-    <!-- Main Chat Interface -->
-    <div class="chat-interface" id="chatInterface" style="display: none;">
-        <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
-        <!-- Sidebar -->
-        <aside class="sidebar">
-            <header class="sidebar-header">
-                <div class="user-profile">
-                    <img src="https://ui-avatars.com/api/?name=User&background=FF6B6B&color=fff" alt="Profile" class="profile-img" id="profileImg">
-                    <div class="profile-info">
-                        <h3 id="userName">User Name</h3>
-                        <p id="userStatus">Online</p>
-                    </div>
-                    <div class="header-actions">
-                        <button class="btn-icon" onclick="openSettings()">⚙️</button>
-                        <button class="btn-icon" onclick="logout()">🚪</button>
-                    </div>
-                </div>
-                <div class="search-bar">
-                    <input type="text" placeholder="Search or start new chat..." id="searchInput">
-                    <span class="search-icon">🔍</span>
-                </div>
-            </header>
+      <div class="messages" id="messages"></div>
 
-            <div class="contacts-list" id="contactsList">
-                <!-- Contacts will be loaded here -->
-            </div>
+      <div class="typing" id="typingRow" hidden>
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+      </div>
 
-            <button class="fab" onclick="openAddContact()">
-                <span>+</span>
-            </button>
-        </aside>
-
-        <!-- Chat Area -->
-        <main class="chat-area">
-            <!-- Welcome Screen -->
-            <div class="welcome-screen" id="welcomeScreen">
-                <button class="btn-menu" onclick="openSidebar()" aria-label="Open chats">&#9776;</button>
-                <div class="welcome-content">
-                    <div class="welcome-illustration">
-                        <svg viewBox="0 0 200 200" width="150" height="150">
-                            <defs>
-                                <linearGradient id="grad2" x1="0%" y1="0%" x2="100%" y2="100%">
-                                    <stop offset="0%" style="stop-color:#667eea;stop-opacity:1" />
-                                    <stop offset="100%" style="stop-color:#764ba2;stop-opacity:1" />
-                                </linearGradient>
-                            </defs>
-                            <circle cx="100" cy="100" r="80" fill="url(#grad2)" opacity="0.2"/>
-                            <path d="M60 100 Q100 60 140 100 T180 100" stroke="url(#grad2)" stroke-width="3" fill="none"/>
-                            <circle cx="60" cy="100" r="8" fill="url(#grad2)"/>
-                            <circle cx="100" cy="60" r="8" fill="url(#grad2)"/>
-                            <circle cx="140" cy="100" r="8" fill="url(#grad2)"/>
-                        </svg>
-                    </div>
-                    <h2>Welcome to ChatConnect</h2>
-                    <p>Select a conversation or start a new chat</p>
-                </div>
-            </div>
-
-            <!-- Chat View -->
-            <div class="chat-view" id="chatView" style="display: none;">
-                <header class="chat-header">
-                    <div class="chat-info">
-                        <button class="btn-back" onclick="closeConversation()" aria-label="Back to chats">&#8592;</button>
-                        <img src="" alt="Contact" class="contact-img" id="contactImg">
-                        <div class="contact-details">
-                            <h3 id="contactName">Contact Name</h3>
-                            <p id="contactStatus">Last seen recently</p>
-                        </div>
-                    </div>
-                    <div class="chat-actions">
-                        <button class="btn-icon" onclick="makeCall('audio')">📞</button>
-                        <button class="btn-icon" onclick="makeCall('video')">📹</button>
-                        <button class="btn-icon" onclick="openChatMenu()">⋮</button>
-                    </div>
-                </header>
-
-                <div class="messages-area" id="messagesArea">
-                    <!-- Messages will be loaded here -->
-                </div>
-
-                <div class="typing-indicator" id="typingIndicator" style="display: none;">
-                    <div class="typing-dots">
-                        <span></span>
-                        <span></span>
-                        <span></span>
-                    </div>
-                </div>
-
-                <div class="attach-sheet" id="attachSheet">
-                    <button onclick="pickFile('image/*')"><span class="ico i-photo">&#128247;</span>Photos</button>
-                    <button onclick="pickFile('video/*')"><span class="ico i-video">&#127909;</span>Video</button>
-                    <button onclick="pickFile('*/*')"><span class="ico i-doc">&#128196;</span>Document</button>
-                </div>
-
-                <div class="emoji-panel" id="emojiPanel">
-                    <div class="emoji-tabs" id="emojiTabs"></div>
-                    <div class="emoji-grid" id="emojiGrid"></div>
-                </div>
-
-                <footer class="message-input-area">
-                    <button class="btn-icon" id="btnEmoji" onclick="toggleEmoji()" title="Emoji">&#128522;</button>
-                    <button class="btn-icon" id="btnAttach" onclick="toggleAttach()" title="Attach">&#128206;</button>
-                    <input type="text" placeholder="Type a message..." id="messageInput" class="message-input" autocomplete="off">
-                    <input type="file" id="fileInput" hidden>
-                    <button class="btn-icon btn-mic" id="btnMic" title="Hold to record voice note">&#127908;</button>
-                    <button class="btn-send" onclick="sendMessage()" title="Send">&#10148;</button>
-                </footer>
-
-                <div class="recording-bar" id="recordingBar">
-                    <span class="rec-dot"></span>
-                    <span class="rec-time" id="recTime">0:00</span>
-                    <span class="rec-hint">Recording voice note...</span>
-                    <button class="rec-cancel" onclick="cancelRecording()">Cancel</button>
-                    <button class="rec-send" onclick="stopRecording(true)">Send</button>
-                </div>
-            </div>
-        </main>
-    </div>
-
-    <!-- Modals -->
-    <!-- Add Contact Modal -->
-    <div class="modal" id="addContactModal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <div>
-                    <h3>Add People</h3>
-                    <p class="modal-subtitle">Search by name or phone number</p>
-                </div>
-                <button class="btn-close" onclick="closeModal('addContactModal')" aria-label="Close">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="people-search">
-                    <span class="people-search-icon">&#128269;</span>
-                    <input type="text" id="peopleSearchInput" autocomplete="off"
-                           placeholder="Type a name or phone number...">
-                    <button type="button" class="people-search-clear" id="peopleSearchClear"
-                            onclick="clearPeopleSearch()" aria-label="Clear">&times;</button>
-                </div>
-                <div class="people-results" id="peopleResults">
-                    <div class="people-empty">
-                        <div class="people-empty-icon">&#128101;</div>
-                        <p class="people-empty-title">Find someone to chat with</p>
-                        <p class="people-empty-text">Start typing at least 2 characters to search registered users.</p>
-                    </div>
-                </div>
-            </div>
+      <div class="reply-strip" id="editStrip" hidden>
+        <div>
+          <small>Editing message</small>
+          <span id="editPreview"></span>
         </div>
+        <button class="icon-btn" id="cancelEditBtn" aria-label="Cancel edit">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4Z"/></svg>
+        </button>
+      </div>
+
+      <div class="emoji-pop" id="emojiPop" hidden>
+        <div class="emoji-tabs" id="emojiTabs"></div>
+        <div class="emoji-grid" id="emojiGrid"></div>
+      </div>
+
+      <div class="attach-pop" id="attachPop" hidden>
+        <button data-accept="image/*"><span class="ap ap-img">🖼️</span>Photo</button>
+        <button data-accept="video/*"><span class="ap ap-vid">🎬</span>Video</button>
+        <button data-accept=""><span class="ap ap-doc">📄</span>Document</button>
+      </div>
+
+      <footer class="composer" id="composer">
+        <button class="icon-btn" id="emojiBtn" title="Emoji" aria-label="Emoji">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20M8.5 8a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3m7 0a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3M12 17.5c-2.3 0-4.3-1.4-5.2-3.5h10.4c-.9 2.1-2.9 3.5-5.2 3.5Z"/></svg>
+        </button>
+        <button class="icon-btn" id="attachBtn" title="Attach" aria-label="Attach">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M16.5 6v11.5a4 4 0 0 1-8 0V5a2.5 2.5 0 0 1 5 0v10.5a1 1 0 0 1-2 0V6H10v9.5a2.5 2.5 0 0 0 5 0V5a4 4 0 0 0-8 0v12.5a5.5 5.5 0 0 0 11 0V6h-1.5Z"/></svg>
+        </button>
+        <input type="file" id="fileInput" hidden>
+        <textarea id="msgInput" rows="1" placeholder="Type a message" autocomplete="off"></textarea>
+        <button class="icon-btn mic" id="micBtn" title="Hold to record" aria-label="Record voice note">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3m5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-3.1A7 7 0 0 0 19 11h-2Z"/></svg>
+        </button>
+        <button class="send" id="sendBtn" title="Send" aria-label="Send">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M2 21 23 12 2 3v7l15 2-15 2v7Z"/></svg>
+        </button>
+      </footer>
+
+      <div class="recorder" id="recorder" hidden>
+        <span class="rec-dot"></span>
+        <span id="recTime">0:00</span>
+        <span class="rec-label">Recording…</span>
+        <button class="btn-ghost" id="recCancel">Cancel</button>
+        <button class="btn-primary sm" id="recSend">Send</button>
+      </div>
     </div>
+  </main>
+</section>
 
-    <!-- Message Options Menu -->
-    <div class="dropdown-menu" id="messageMenu" style="display: none;">
-        <button onclick="editMessage()">✏️ Edit</button>
-        <button onclick="deleteMessage()">🗑️ Delete</button>
-        <button onclick="copyMessage()">📋 Copy</button>
-        <button onclick="forwardMessage()">↪️ Forward</button>
+<!-- ============================ MODALS ============================ -->
+<div class="scrim" id="scrim" hidden></div>
+
+<div class="sheet" id="newChatSheet" hidden>
+  <header>
+    <div>
+      <h3>New chat</h3>
+      <small>Find people by name or phone number</small>
     </div>
-
-    <!-- Toast Notification -->
-
-    <!-- Call Overlay -->
-    <div class="call-overlay" id="callOverlay">
-        <div class="call-box">
-            <video id="remoteVideo" autoplay playsinline></video>
-            <video id="localVideo" autoplay playsinline muted></video>
-            <div class="call-meta">
-                <img id="callAvatar" src="" alt="">
-                <h3 id="callName">Calling...</h3>
-                <p id="callStatus">Connecting</p>
-            </div>
-            <div class="call-controls">
-                <button class="call-btn mute" id="btnMute" onclick="toggleMute()" title="Mute">&#127908;</button>
-                <button class="call-btn cam" id="btnCam" onclick="toggleCam()" title="Camera">&#127909;</button>
-                <button class="call-btn hang" onclick="hangUp()" title="End call">&#128222;</button>
-            </div>
-        </div>
+    <button class="icon-btn" id="closeNewChat" aria-label="Close">
+      <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4Z"/></svg>
+    </button>
+  </header>
+  <div class="sheet-body">
+    <div class="search big">
+      <svg viewBox="0 0 24 24" width="17" height="17"><path fill="currentColor" d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.6-.6 3.1-1.6 4.2l.3.3h.8l5 5-1.5 1.5-5-5v-.8l-.3-.3A6.5 6.5 0 1 1 9.5 3m0 2a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9Z"/></svg>
+      <input type="text" id="peopleSearch" placeholder="Type a name or number" autocomplete="off">
     </div>
+    <div class="people" id="peopleResults"></div>
+  </div>
+</div>
 
-    <!-- Incoming Call -->
-    <div class="incoming-call" id="incomingCall">
-        <img id="incomingAvatar" src="" alt="">
-        <div class="incoming-text">
-            <h4 id="incomingName">Someone</h4>
-            <p id="incomingType">Incoming call</p>
-        </div>
-        <button class="ic-btn accept" onclick="acceptCall()" title="Accept">&#9989;</button>
-        <button class="ic-btn decline" onclick="declineCall()" title="Decline">&#10060;</button>
-    </div>
+<div class="sheet" id="profileSheet" hidden>
+  <header>
+    <div><h3>Your profile</h3><small>Visible to your contacts</small></div>
+    <button class="icon-btn" id="closeProfile" aria-label="Close">
+      <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4Z"/></svg>
+    </button>
+  </header>
+  <div class="sheet-body">
+    <label class="field"><span>Name</span><input type="text" id="pfName"></label>
+    <label class="field"><span>About</span><input type="text" id="pfAbout"></label>
+    <p class="muted" id="pfPhone"></p>
+    <button class="btn-primary" id="saveProfile">Save</button>
+  </div>
+</div>
 
-    <div class="toast" id="toast"></div>
+<!-- message context menu -->
+<div class="menu" id="msgMenu" hidden>
+  <button data-act="copy">Copy</button>
+  <button data-act="edit">Edit</button>
+  <button data-act="delete" class="danger">Delete</button>
+</div>
 
-    <script src="/socket.io/socket.io.js"></script>
-    <script src="js/app.js?v=__V__"></script>
+<!-- ============================ CALLS ============================ -->
+<div class="call" id="callScreen" hidden>
+  <video id="remoteVideo" autoplay playsinline></video>
+  <video id="localVideo" autoplay playsinline muted></video>
+  <div class="call-info">
+    <img id="callAvatar" alt="">
+    <h3 id="callName">Calling…</h3>
+    <p id="callStatus">Connecting</p>
+  </div>
+  <div class="call-actions">
+    <button class="cbtn" id="muteBtn" title="Mute">🎤</button>
+    <button class="cbtn" id="camBtn" title="Camera">🎬</button>
+    <button class="cbtn end" id="hangBtn" title="End call">✕</button>
+  </div>
+</div>
+
+<div class="ring" id="ringBanner" hidden>
+  <img id="ringAvatar" alt="">
+  <div><strong id="ringName">Someone</strong><small id="ringKind">Incoming call</small></div>
+  <button class="ring-btn ok" id="acceptBtn" aria-label="Accept">✓</button>
+  <button class="ring-btn no" id="declineBtn" aria-label="Decline">✕</button>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="js/app.js?v=__V__"></script>
 </body>
 </html>

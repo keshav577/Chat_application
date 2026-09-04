@@ -6,3 +6,4 @@ chat.db-shm
 npm-debug.log*
 .DS_Store
 chat.db
+.env

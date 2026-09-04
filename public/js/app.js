@@ -1,1673 +1,1183 @@
-// ==================== GLOBAL VARIABLES ====================
-let socket = null;
-let currentUser = null;
-let currentConversation = null;
-let currentContact = null;
-let contacts = [];
-let conversations = {};
-let typingTimer = null;
-let selectedMessageId = null;
-let isTyping = false;
+/* ============================================================
+   ChatConnect — client
+   ============================================================ */
+(() => {
+'use strict';
 
-// ==================== INITIALIZATION ====================
-document.addEventListener('DOMContentLoaded', () => {
-    checkAuthentication();
-    setupEventListeners();
-    initializeSocketEvents();
-});
+// ------------------------------------------------------------- state ----
 
-// ==================== SESSION STORAGE ====================
-// The app often runs inside an iframe (preview panels) where localStorage can
-// throw or be partitioned away. Persist through every channel available --
-// memory, localStorage, sessionStorage and finally a cookie -- so a page
-// reload doesn't silently destroy a perfectly valid session.
-let memoryStore = { token: null, userData: null };
+const state = {
+    me: null,
+    socket: null,
+    contacts: [],
+    peer: null,            // contact currently open
+    conversationId: null,
+    onlineIds: new Set(),
+    editingId: null,
+    typingTimer: null,
+    typingSent: false
+};
 
-function cookieGet(key) {
-    try {
-        const m = document.cookie.match(new RegExp('(?:^|; )' + key + '=([^;]*)'));
-        return m ? decodeURIComponent(m[1]) : null;
-    } catch (e) { return null; }
-}
+const $ = (id) => document.getElementById(id);
 
-function cookieSet(key, value) {
-    try {
-        const secure = location.protocol === 'https:' ? '; Secure; SameSite=None' : '; SameSite=Lax';
-        document.cookie = `${key}=${encodeURIComponent(value)}; path=/; max-age=${7 * 24 * 60 * 60}${secure}`;
-    } catch (e) { /* non-fatal */ }
-}
+// --------------------------------------------------------- session -----
+// The app frequently runs inside an iframe where localStorage can throw or be
+// partitioned. Persist through every channel available so a reload never
+// destroys a valid session.
 
-function cookieDelete(key) {
-    try { document.cookie = `${key}=; path=/; max-age=0`; } catch (e) { /* non-fatal */ }
-}
+const mem = Object.create(null);
 
-const safeStorage = {
+const store = {
     get(key) {
-        if (memoryStore[key] != null) return memoryStore[key];
-        for (const read of [
+        if (mem[key] != null) return mem[key];
+        const readers = [
             () => localStorage.getItem(key),
             () => sessionStorage.getItem(key),
-            () => cookieGet(key)
-        ]) {
+            () => {
+                const m = document.cookie.match(new RegExp('(?:^|; )' + key + '=([^;]*)'));
+                return m ? decodeURIComponent(m[1]) : null;
+            }
+        ];
+        for (const read of readers) {
             try {
                 const v = read();
-                if (v != null) { memoryStore[key] = v; return v; }
-            } catch (e) { /* try next channel */ }
+                if (v != null && v !== 'null' && v !== 'undefined') { mem[key] = v; return v; }
+            } catch { /* try next */ }
         }
         return null;
     },
     set(key, value) {
-        memoryStore[key] = value;
-        try { localStorage.setItem(key, value); } catch (e) {}
-        try { sessionStorage.setItem(key, value); } catch (e) {}
-        cookieSet(key, value);
+        mem[key] = value;
+        try { localStorage.setItem(key, value); } catch {}
+        try { sessionStorage.setItem(key, value); } catch {}
+        try {
+            const sec = location.protocol === 'https:' ? '; Secure; SameSite=None' : '; SameSite=Lax';
+            document.cookie = `${key}=${encodeURIComponent(value)}; path=/; max-age=2592000${sec}`;
+        } catch {}
     },
-    remove(key) {
-        memoryStore[key] = null;
-        try { localStorage.removeItem(key); } catch (e) {}
-        try { sessionStorage.removeItem(key); } catch (e) {}
-        cookieDelete(key);
+    clear(key) {
+        delete mem[key];
+        try { localStorage.removeItem(key); } catch {}
+        try { sessionStorage.removeItem(key); } catch {}
+        try { document.cookie = `${key}=; path=/; max-age=0`; } catch {}
     }
 };
 
-function getToken() {
-    const t = safeStorage.get('token');
-    return (!t || t === 'null' || t === 'undefined') ? null : t;
-}
+const token = () => store.get('token');
 
-// Auth headers for every protected request.
-function authHeaders(extra) {
-    return Object.assign({ 'Authorization': `Bearer ${getToken()}` }, extra || {});
-}
+// ------------------------------------------------------------- api -----
 
-// Wrapper that forces a clean logout if the session is missing/expired,
-// instead of leaving the user in a logged-in UI with no valid token.
-async function apiFetch(url, options = {}) {
-    const token = getToken();
-    if (!token) {
-        forceLogout('Your session expired. Please sign in again.');
-        throw new Error('No session');
+async function api(path, options = {}) {
+    const opts = { ...options, headers: { ...(options.headers || {}) } };
+    const t = token();
+    if (t) opts.headers.Authorization = `Bearer ${t}`;
+    if (opts.body && !(opts.body instanceof FormData)) {
+        opts.headers['Content-Type'] = 'application/json';
+        if (typeof opts.body !== 'string') opts.body = JSON.stringify(opts.body);
     }
-    options.headers = Object.assign({}, options.headers || {}, {
-        'Authorization': `Bearer ${token}`
-    });
-    const response = await fetch(url, options);
-    if (response.status === 401 || response.status === 403) {
-        forceLogout('Your session expired. Please sign in again.');
+
+    let res;
+    try {
+        res = await fetch(path, opts);
+    } catch {
+        throw new Error('Network unavailable');
+    }
+
+    if (res.status === 401) {
+        signOut(true);
         throw new Error('Session expired');
     }
-    return response;
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Something went wrong');
+    return data;
 }
 
-function forceLogout(message) {
-    safeStorage.remove('token');
-    safeStorage.remove('userData');
-    currentUser = null;
-    currentConversation = null;
-    currentContact = null;
-    if (socket) { try { socket.disconnect(); } catch (e) {} socket = null; }
-    showAuthScreen();
-    if (message) showToast(message, 'error');
+// ------------------------------------------------------------ utils ----
+
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+const avatarFor = (name, url) => url
+    || `https://ui-avatars.com/api/?name=${encodeURIComponent(name || '?')}&background=00a884&color=05231d&bold=true`;
+
+function toast(message, kind = '') {
+    const el = $('toast');
+    el.textContent = message;
+    el.className = 'toast ' + kind;
+    el.hidden = false;
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => { el.hidden = true; }, 3200);
 }
 
-function checkAuthentication() {
-    const token = getToken();
-    const userData = safeStorage.get('userData');
-    
-    // Both must be present, otherwise the session is broken -> clear it.
-    if (token && userData) {
-        try {
-            currentUser = JSON.parse(userData);
-        } catch (e) {
-            forceLogout();
-            return;
-        }
-        showChatInterface();
-        initializeChat().catch(err => console.error('Init failed:', err));
-    } else {
-        // No stored session at all -- just show the login screen quietly.
-        showAuthScreen();
-    }
+// SQLite stores "YYYY-MM-DD HH:MM:SS" in UTC; make it parse correctly.
+function parseTime(value) {
+    if (!value) return new Date();
+    if (value instanceof Date) return value;
+    const s = String(value);
+    return new Date(/Z|[+-]\d\d:?\d\d$/.test(s) ? s : s.replace(' ', 'T') + 'Z');
 }
 
-// Setup all event listeners
-function setupEventListeners() {
-    // Auth form submissions
-    document.getElementById('loginForm').addEventListener('submit', handleLogin);
-    document.getElementById('registerForm').addEventListener('submit', handleRegister);
-    
-    // Message input
-    const messageInput = document.getElementById('messageInput');
-    messageInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            sendMessage();
-        }
-    });
-    
-    messageInput.addEventListener('input', handleTyping);
-    
-    // Search functionality
-    document.getElementById('searchInput').addEventListener('input', (e) => {
-        searchContacts(e.target.value);
-    });
-    
-    // People search inside the Add People modal
-    document.getElementById('peopleSearchInput').addEventListener('input', (e) => {
-        handlePeopleSearch(e.target.value);
-    });
-    
-    // Attachment picker
-    document.getElementById('fileInput').addEventListener('change', (e) => {
-        const file = e.target.files && e.target.files[0];
-        if (file) uploadAndSend(file);
-    });
-    
-    // Voice notes: hold the mic (mouse or touch) to record
-    const mic = document.getElementById('btnMic');
-    mic.addEventListener('mousedown', startRecording);
-    mic.addEventListener('mouseup', () => stopRecording(true));
-    mic.addEventListener('mouseleave', () => { if (mediaRecorder) stopRecording(true); });
-    mic.addEventListener('touchstart', (e) => { e.preventDefault(); startRecording(); });
-    mic.addEventListener('touchend', (e) => { e.preventDefault(); stopRecording(true); });
-    
-    // Close emoji/attach popovers when clicking elsewhere
-    document.addEventListener('click', (e) => {
-        if (!e.target.closest('#emojiPanel') && !e.target.closest('#btnEmoji')) {
-            document.getElementById('emojiPanel').classList.remove('open');
-        }
-        if (!e.target.closest('#attachSheet') && !e.target.closest('#btnAttach')) {
-            document.getElementById('attachSheet').classList.remove('open');
-        }
-    });
-    
-    // Escape closes any open modal
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') {
-            document.querySelectorAll('.modal.active').forEach(m => m.classList.remove('active'));
-        }
-    });
-    
-    // Close modals on backdrop click
-    document.querySelectorAll('.modal').forEach(modal => {
-        modal.addEventListener('click', (e) => {
-            if (e.target === modal) {
-                modal.classList.remove('active');
-            }
-        });
-    });
-    
-    // Message context menu
-    document.addEventListener('contextmenu', (e) => {
-        if (e.target.closest('.message')) {
-            e.preventDefault();
-            showMessageMenu(e);
-        }
-    });
-    
-    // Close context menu on click outside
-    document.addEventListener('click', () => {
-        const menu = document.getElementById('messageMenu');
-        if (menu) menu.style.display = 'none';
-    });
+function clockTime(value) {
+    return parseTime(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-// ==================== AUTHENTICATION ====================
-async function handleLogin(e) {
-    e.preventDefault();
-    const phone = document.getElementById('loginPhone').value;
-    const password = document.getElementById('loginPassword').value;
-    const button = e.target.querySelector('.btn-submit');
-    
-    button.classList.add('loading');
-    
-    try {
-        const response = await fetch('/api/auth/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ phone, password })
-        });
-        
-        const data = await response.json();
-        
-        if (response.ok) {
-            safeStorage.set('token', data.token);
-            safeStorage.set('userData', JSON.stringify(data.user));
-            currentUser = data.user;
-            showChatInterface();
-            await initializeChat();
-            // Don't overwrite a session error toast with a success message.
-            if (currentUser) showToast('Welcome back!', 'success');
-        } else {
-            showToast(data.error || 'Login failed', 'error');
-        }
-    } catch (error) {
-        showToast('Connection error. Please try again.', 'error');
-    } finally {
-        button.classList.remove('loading');
-    }
-}
-
-async function handleRegister(e) {
-    e.preventDefault();
-    const name = document.getElementById('registerName').value;
-    const phone = document.getElementById('registerPhone').value;
-    const password = document.getElementById('registerPassword').value;
-    const button = e.target.querySelector('.btn-submit');
-    
-    // Validate phone number format
-    if (!validatePhoneNumber(phone)) {
-        showToast('Please enter a valid phone number', 'error');
-        return;
-    }
-    
-    // Validate password strength
-    if (password.length < 6) {
-        showToast('Password must be at least 6 characters', 'error');
-        return;
-    }
-    
-    button.classList.add('loading');
-    
-    try {
-        const response = await fetch('/api/auth/register', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, phone, password })
-        });
-        
-        const data = await response.json();
-        
-        if (response.ok) {
-            safeStorage.set('token', data.token);
-            safeStorage.set('userData', JSON.stringify(data.user));
-            currentUser = data.user;
-            showChatInterface();
-            await initializeChat();
-            if (currentUser) showToast('Account created successfully!', 'success');
-        } else if (response.status === 400 && /already registered/i.test(data.error || '')) {
-            // Don't dead-end the user: pre-fill the sign-in tab for them.
-            showToast('That number is already registered. Please sign in.', 'warning');
-            document.getElementById('loginPhone').value = phone;
-            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-            document.querySelectorAll('.auth-form').forEach(f => f.classList.remove('active'));
-            document.querySelector('.tab-btn').classList.add('active');
-            document.getElementById('loginForm').classList.add('active');
-            document.getElementById('loginPassword').focus();
-        } else {
-            showToast(data.error || 'Registration failed', 'error');
-        }
-    } catch (error) {
-        showToast('Connection error. Please try again.', 'error');
-    } finally {
-        button.classList.remove('loading');
-    }
-}
-
-function logout() {
-    if (confirm('Are you sure you want to logout?')) {
-        fetch('/api/auth/logout', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${getToken()}`
-            }
-        });
-        
-        safeStorage.remove('token');
-        safeStorage.remove('userData');
-        
-        if (socket) {
-            socket.disconnect();
-        }
-        
-        currentUser = null;
-        currentConversation = null;
-        currentContact = null;
-        
-        showAuthScreen();
-        showToast('Logged out successfully', 'success');
-    }
-}
-
-// ==================== UI NAVIGATION ====================
-function showAuthScreen() {
-    document.getElementById('authScreen').style.display = 'flex';
-    document.getElementById('chatInterface').style.display = 'none';
-}
-
-// ==================== MOBILE NAVIGATION ====================
-function openSidebar() {
-    document.querySelector('.sidebar').classList.add('open');
-    document.getElementById('sidebarOverlay').classList.add('active');
-}
-
-function closeSidebar() {
-    document.querySelector('.sidebar').classList.remove('open');
-    document.getElementById('sidebarOverlay').classList.remove('active');
-}
-
-// On mobile, go back from a chat to the conversation list.
-function closeConversation() {
-    if (window.matchMedia('(max-width: 768px)').matches) {
-        document.getElementById('chatView').style.display = 'none';
-        document.getElementById('welcomeScreen').style.display = 'flex';
-        openSidebar();
-    }
-}
-
-function showChatInterface() {
-    document.getElementById('authScreen').style.display = 'none';
-    document.getElementById('chatInterface').style.display = 'flex';
-}
-
-function switchTab(tab, evt) {
-    document.querySelectorAll('.tab-btn').forEach(btn => {
-        btn.classList.remove('active');
-    });
-    document.querySelectorAll('.auth-form').forEach(form => {
-        form.classList.remove('active');
-    });
-    
-    const btn = (evt && evt.target) || (window.event && window.event.target);
-    if (btn) btn.classList.add('active');
-    document.getElementById(tab + 'Form').classList.add('active');
-}
-
-// ==================== CHAT INITIALIZATION ====================
-async function initializeChat() {
-    if (!currentUser) return;
-    updateUserProfile();
-    await loadContacts();
-    // loadContacts() may have invalidated the session (expired token), which
-    // clears currentUser -- so re-check before touching currentUser.id.
-    if (!currentUser) return;
-    connectSocket();
-}
-
-function updateUserProfile() {
-    document.getElementById('userName').textContent = currentUser.name;
-    document.getElementById('userStatus').textContent = 'Online';
-    
-    const avatarUrl = currentUser.avatar || 
-        `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUser.name)}&background=FF6B6B&color=fff`;
-    document.getElementById('profileImg').src = avatarUrl;
-}
-
-// ==================== SOCKET CONNECTION ====================
-function connectSocket() {
-    if (!currentUser) return;
-    if (socket) { try { socket.disconnect(); } catch (e) {} }
-    socket = io();
-    
-    socket.emit('authenticate', currentUser.id);
-    
-    socket.on('connect', () => {
-        console.log('Connected to server');
-    });
-    
-    socket.on('disconnect', () => {
-        console.log('Disconnected from server');
-    });
-}
-
-function initializeSocketEvents() {
-    if (!socket) return;
-    
-    // New message received
-    socket.on('newMessage', (data) => {
-        handleNewMessage(data);
-    });
-    
-    // Message edited
-    socket.on('messageEdited', (data) => {
-        handleMessageEdited(data);
-    });
-    
-    // Message deleted
-    socket.on('messageDeleted', (data) => {
-        handleMessageDeleted(data);
-    });
-    
-    // User online status
-    socket.on('userOnline', (userId) => {
-        updateUserStatus(userId, true);
-    });
-    
-    socket.on('userOffline', (userId) => {
-        updateUserStatus(userId, false);
-    });
-    
-    // Typing indicators
-    socket.on('typing', (data) => {
-        showTypingIndicator(data);
-    });
-    
-    socket.on('stopTyping', (data) => {
-        hideTypingIndicator(data);
-    });
-    
-    // Message read receipts
-    socket.on('messageRead', (data) => {
-        updateMessageStatus(data.messageId, 'read');
-    });
-    
-    // ---------- Call signalling ----------
-    socket.on('incomingCall', async ({ from, offer, callType }) => {
-        if (peer) { socket.emit('rejectCall', { toUserId: from }); return; }
-        callPeerId = from;
-        pendingOffer = offer;
-        currentCallType = callType;
-        const contact = contacts.find(c => c.contact_id === from);
-        const name = contact ? (contact.contact_name || contact.user_name) : 'Unknown caller';
-        document.getElementById('incomingName').textContent = name;
-        document.getElementById('incomingType').textContent =
-            (callType === 'video' ? 'Incoming video call' : 'Incoming voice call');
-        document.getElementById('incomingAvatar').src = (contact && contact.avatar) ||
-            `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=667eea&color=fff`;
-        document.getElementById('incomingCall').classList.add('active');
-    });
-    
-    socket.on('callAnswered', async ({ answer }) => {
-        if (peer) {
-            await peer.setRemoteDescription(new RTCSessionDescription(answer));
-            document.getElementById('callStatus').textContent = 'Connected';
-        }
-    });
-    
-    socket.on('iceCandidate', async ({ candidate }) => {
-        if (peer && candidate) {
-            try { await peer.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
-        }
-    });
-    
-    socket.on('callRejected', () => { showToast('Call declined', 'warning'); hangUp(true); });
-    socket.on('callEnded', () => { showToast('Call ended', 'warning'); hangUp(true); });
-}
-
-// ==================== CONTACTS MANAGEMENT ====================
-async function loadContacts() {
-    try {
-        const response = await apiFetch('/api/contacts');
-        
-        if (response.ok) {
-            contacts = await response.json();
-            displayContacts();
-            return true;
-        }
-        return false;
-    } catch (error) {
-        // A dead session already triggered forceLogout(); don't nag the user
-        // with a second, misleading error toast.
-        console.error('Failed to load contacts:', error);
-        if (currentUser) showToast('Failed to load contacts', 'error');
-        return false;
-    }
-}
-
-function displayContacts() {
-    const contactsList = document.getElementById('contactsList');
-    contactsList.innerHTML = '';
-    
-    if (contacts.length === 0) {
-        contactsList.innerHTML = `
-            <div style="text-align: center; padding: 40px; color: #718096;">
-                <p style="margin-bottom: 20px;">No contacts yet</p>
-                <button class="btn-primary" onclick="openAddContact()">
-                    Add your first contact
-                </button>
-            </div>
-        `;
-        return;
-    }
-    
-    contacts.forEach(contact => {
-        const contactElement = createContactElement(contact);
-        contactsList.appendChild(contactElement);
-    });
-}
-
-function createContactElement(contact) {
-    const div = document.createElement('div');
-    div.className = 'contact-item';
-    div.dataset.contactId = contact.contact_id;
-    div.onclick = () => openConversation(contact);
-    
-    const avatarUrl = contact.avatar || 
-        `https://ui-avatars.com/api/?name=${encodeURIComponent(contact.contact_name || contact.user_name)}&background=667eea&color=fff`;
-    
-    const lastMessageTime = contact.last_message_time ? 
-        formatMessageTime(contact.last_message_time) : '';
-    
-    div.innerHTML = `
-        <div style="position: relative;">
-            <img src="${avatarUrl}" alt="${contact.contact_name}" class="contact-avatar">
-            ${contact.is_online ? '<span class="online-indicator"></span>' : ''}
-        </div>
-        <div class="contact-info">
-            <div class="contact-name">${contact.contact_name || contact.user_name}</div>
-            <div class="last-message">${contact.last_message || 'No messages yet'}</div>
-        </div>
-        <div class="contact-meta">
-            <div class="message-time">${lastMessageTime}</div>
-            ${contact.unread_count > 0 ? 
-                `<span class="unread-count">${contact.unread_count}</span>` : ''}
-        </div>
-    `;
-    
-    if (currentContact && currentContact.contact_id === contact.contact_id) {
-        div.classList.add('active');
-    }
-    
-    return div;
-}
-
-function searchContacts(query) {
-    const filtered = contacts.filter(contact => {
-        const name = (contact.contact_name || contact.user_name).toLowerCase();
-        const phone = contact.phone.toLowerCase();
-        return name.includes(query.toLowerCase()) || phone.includes(query);
-    });
-    
-    const contactsList = document.getElementById('contactsList');
-    contactsList.innerHTML = '';
-    
-    filtered.forEach(contact => {
-        const contactElement = createContactElement(contact);
-        contactsList.appendChild(contactElement);
-    });
-}
-
-// ==================== ADD PEOPLE ====================
-let peopleSearchTimer = null;
-let peopleResultsCache = [];
-
-function openAddContact() {
-    document.getElementById('addContactModal').classList.add('active');
-    closeSidebar();
-    const input = document.getElementById('peopleSearchInput');
-    input.value = '';
-    document.getElementById('peopleSearchClear').classList.remove('visible');
-    renderPeopleIdle();
-    setTimeout(() => input.focus(), 100);
-}
-
-function closeModal(modalId) {
-    document.getElementById(modalId).classList.remove('active');
-}
-
-function clearPeopleSearch() {
-    const input = document.getElementById('peopleSearchInput');
-    input.value = '';
-    document.getElementById('peopleSearchClear').classList.remove('visible');
-    renderPeopleIdle();
-    input.focus();
-}
-
-function renderPeopleIdle() {
-    document.getElementById('peopleResults').innerHTML = `
-        <div class="people-empty">
-            <div class="people-empty-icon">&#128101;</div>
-            <p class="people-empty-title">Find someone to chat with</p>
-            <p class="people-empty-text">Start typing at least 2 characters to search registered users.</p>
-        </div>`;
-}
-
-function renderPeopleLoading() {
-    document.getElementById('peopleResults').innerHTML = `
-        <div class="people-skeletons">
-            ${'<div class="people-skeleton"><div class="sk-avatar"></div><div class="sk-lines"><div class="sk-line"></div><div class="sk-line short"></div></div></div>'.repeat(3)}
-        </div>`;
-}
-
-// Debounced live search so we don't hammer the server on every keystroke.
-function handlePeopleSearch(value) {
-    const q = value.trim();
-    document.getElementById('peopleSearchClear').classList.toggle('visible', q.length > 0);
-    clearTimeout(peopleSearchTimer);
-
-    if (q.length < 2) {
-        renderPeopleIdle();
-        return;
-    }
-
-    renderPeopleLoading();
-    peopleSearchTimer = setTimeout(async () => {
-        try {
-            const response = await apiFetch(`/api/users/search?q=${encodeURIComponent(q)}`);
-            if (!response.ok) throw new Error('search failed');
-            peopleResultsCache = await response.json();
-            renderPeopleResults(peopleResultsCache, q);
-        } catch (error) {
-            document.getElementById('peopleResults').innerHTML =
-                `<div class="people-empty"><p class="people-empty-title">Couldn't search right now</p>
-                 <p class="people-empty-text">Please check your connection and try again.</p></div>`;
-        }
-    }, 250);
-}
-
-function highlightMatch(text, query) {
-    const safe = escapeHtml(text);
-    const q = query.trim();
-    if (!q) return safe;
-    const escaped = escapeHtml(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return safe.replace(new RegExp(`(${escaped})`, 'ig'), '<mark>$1</mark>');
-}
-
-function renderPeopleResults(users, query) {
-    const box = document.getElementById('peopleResults');
-
-    if (!users.length) {
-        box.innerHTML = `
-            <div class="people-empty">
-                <div class="people-empty-icon">&#128533;</div>
-                <p class="people-empty-title">No one found</p>
-                <p class="people-empty-text">Nobody matching "${escapeHtml(query)}" has registered yet.
-                Ask them to create an account first.</p>
-            </div>`;
-        return;
-    }
-
-    const rows = users.map((u, i) => {
-        const avatar = u.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(u.name)}&background=667eea&color=fff`;
-        const action = u.is_contact
-            ? `<button class="btn-added" onclick="messageExisting(${u.id})">Message</button>`
-            : `<button class="btn-add" onclick="addPerson(${u.id}, this)">Add</button>`;
-        return `
-            <div class="person-row" style="animation-delay:${i * 35}ms">
-                <div class="person-avatar-wrap">
-                    <img class="person-avatar" src="${avatar}" alt="${escapeHtml(u.name)}">
-                    ${u.is_online ? '<span class="online-indicator"></span>' : ''}
-                </div>
-                <div class="person-info">
-                    <div class="person-name">${highlightMatch(u.name, query)}</div>
-                    <div class="person-phone">${highlightMatch(u.phone, query)}</div>
-                </div>
-                ${action}
-            </div>`;
-    }).join('');
-
-    const label = `${users.length} ${users.length === 1 ? 'person' : 'people'} found`;
-    box.innerHTML = `<div class="people-results-head">${label}</div>${rows}`;
-}
-
-// Add by user id straight from the search results.
-async function addPerson(userId, buttonEl) {
-    const user = peopleResultsCache.find(u => u.id === userId);
-    if (!user) return;
-
-    buttonEl.disabled = true;
-    buttonEl.textContent = 'Adding...';
-
-    try {
-        const response = await apiFetch('/api/contacts/add', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ phone: user.phone, name: user.name })
-        });
-        const data = await response.json();
-
-        if (response.ok) {
-            user.is_contact = 1;
-            buttonEl.outerHTML = `<button class="btn-added" onclick="messageExisting(${userId})">Message</button>`;
-            showToast(`${user.name} added to your chats`, 'success');
-            loadContacts();
-        } else {
-            buttonEl.disabled = false;
-            buttonEl.textContent = 'Add';
-            showToast(data.error || 'Failed to add contact', 'error');
-        }
-    } catch (error) {
-        buttonEl.disabled = false;
-        buttonEl.textContent = 'Add';
-        showToast('Connection error', 'error');
-    }
-}
-
-// Jump straight into the conversation with an existing contact.
-async function messageExisting(userId) {
-    closeModal('addContactModal');
-    await loadContacts();
-    const contact = contacts.find(c => c.contact_id === userId);
-    if (contact) openConversation(contact);
-}
-
-function escapeHtml(str) {
-    return String(str).replace(/[&<>"']/g, c => (
-        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
-    ));
-}
-
-// ==================== CONVERSATION ====================
-async function openConversation(contact) {
-    currentContact = contact;
-    currentConversation = contact.conversation_id;
-    
-    // Update UI
-    document.getElementById('welcomeScreen').style.display = 'none';
-    document.getElementById('chatView').style.display = 'flex';
-    
-    // Update contact info in header
-    const contactName = contact.contact_name || contact.user_name;
-    document.getElementById('contactName').textContent = contactName;
-    
-    const avatarUrl = contact.avatar || 
-        `https://ui-avatars.com/api/?name=${encodeURIComponent(contactName)}&background=667eea&color=fff`;
-    document.getElementById('contactImg').src = avatarUrl;
-    
-    const statusText = contact.is_online ? 'Online' : 
-        `Last seen ${formatLastSeen(contact.last_seen)}`;
-    document.getElementById('contactStatus').textContent = statusText;
-    
-    // Load messages
-    await loadMessages();
-    
-    // Mark contact as active (works whether or not this came from a click)
-    document.querySelectorAll('.contact-item').forEach(item => {
-        item.classList.toggle('active',
-            Number(item.dataset.contactId) === Number(contact.contact_id));
-    });
-    
-    // On mobile the sidebar covers the chat -- close it after picking a chat.
-    closeSidebar();
-    
-    if (!window.matchMedia('(max-width: 768px)').matches) {
-        document.getElementById('messageInput').focus();
-    }
-}
-
-async function loadMessages() {
-    if (!currentConversation) return;
-    
-    try {
-        const response = await apiFetch(`/api/messages/${currentConversation}`);
-        
-        if (response.ok) {
-            const messages = await response.json();
-            displayMessages(messages);
-        }
-    } catch (error) {
-        console.error('Failed to load messages:', error);
-        showToast('Failed to load messages', 'error');
-    }
-}
-
-function displayMessages(messages) {
-    const messagesArea = document.getElementById('messagesArea');
-    messagesArea.innerHTML = '';
-    
-    let lastDate = null;
-    
-    messages.forEach(message => {
-        // Add date separator if needed
-        const messageDate = new Date(message.created_at).toDateString();
-        if (messageDate !== lastDate) {
-            const dateSeparator = document.createElement('div');
-            dateSeparator.className = 'date-separator';
-            dateSeparator.innerHTML = `<span>${formatDateSeparator(messageDate)}</span>`;
-            messagesArea.appendChild(dateSeparator);
-            lastDate = messageDate;
-        }
-        
-        // Add message
-        const messageElement = createMessageElement(message);
-        messagesArea.appendChild(messageElement);
-    });
-    
-    // Scroll to bottom
-    messagesArea.scrollTop = messagesArea.scrollHeight;
-    
-    // Mark messages as read
-    if (socket && currentContact) {
-        messages.forEach(msg => {
-            if (msg.sender_id !== currentUser.id && !msg.is_read) {
-                socket.emit('markAsRead', {
-                    messageId: msg.id,
-                    senderId: msg.sender_id
-                });
-            }
-        });
-    }
-}
-
-// Renders image / video / audio / document attachments inside a bubble.
-function renderAttachment(message) {
-    if (!message.file_url) return '';
-    const url = escapeHtml(message.file_url);
-    switch (message.type) {
-        case 'image':
-            return `<a href="${url}" target="_blank" rel="noopener" class="msg-image">
-                        <img src="${url}" alt="image" loading="lazy">
-                    </a>`;
-        case 'video':
-            return `<video class="msg-video" src="${url}" controls preload="metadata"></video>`;
-        case 'audio':
-            return `<audio class="msg-audio" src="${url}" controls preload="metadata"></audio>`;
-        default:
-            return `<a class="msg-file" href="${url}" target="_blank" rel="noopener" download>
-                        <span class="msg-file-ico">&#128196;</span>
-                        <span class="msg-file-name">${escapeHtml(message.message || 'Download file')}</span>
-                    </a>`;
-    }
-}
-
-function createMessageElement(message) {
-    const div = document.createElement('div');
-    const isSent = message.sender_id === currentUser.id;
-    div.className = `message ${isSent ? 'sent' : 'received'}`;
-    div.dataset.messageId = message.id;
-    
-    const time = formatMessageTime(message.created_at);
-    const editedText = message.is_edited ? ' (edited)' : '';
-    
-    div.innerHTML = `
-        <div class="message-bubble${message.file_url && message.type === 'image' ? ' media' : ''}">
-            ${renderAttachment(message)}
-            ${message.message && !(message.type === 'image' && message.file_url)
-                ? `<div class="message-text">${escapeHtml(message.message)}</div>` : ''}
-            <div class="message-info">
-                <span class="message-time">${time}${editedText}</span>
-                ${isSent ? getMessageStatusIcon(message) : ''}
-            </div>
-        </div>
-    `;
-    
-    // Add context menu for own messages
-    if (isSent) {
-        div.addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-            showMessageMenu(e, message);
-        });
-    }
-    
-    return div;
-}
-
-function getMessageStatusIcon(message) {
-    if (message.is_read) {
-        return '<span style="color: #4ECDC4;">✓✓</span>';
-    } else if (message.is_delivered) {
-        return '<span>✓✓</span>';
-    } else {
-        return '<span>✓</span>';
-    }
-}
-
-// ==================== SEND MESSAGE ====================
-async function sendMessage() {
-    const messageInput = document.getElementById('messageInput');
-    const message = messageInput.value.trim();
-    
-    if (!message || !currentContact) return;
-    
-    // Clear input immediately
-    messageInput.value = '';
-    
-    // Stop typing indicator
-    if (socket && isTyping) {
-        socket.emit('stopTyping', {
-            conversationId: currentConversation,
-            receiverId: currentContact.contact_id
-        });
-        isTyping = false;
-    }
-    
-    try {
-        const response = await apiFetch('/api/messages/send', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                receiverId: currentContact.contact_id,
-                message: message,
-                type: 'text'
-            })
-        });
-        
-        if (response.ok) {
-            const newMessage = await response.json();
-            
-            // Add message to UI
-            const messageElement = createMessageElement(newMessage);
-            document.getElementById('messagesArea').appendChild(messageElement);
-            
-            // Scroll to bottom
-            const messagesArea = document.getElementById('messagesArea');
-            messagesArea.scrollTop = messagesArea.scrollHeight;
-            
-            // Update contact list with last message
-            updateContactLastMessage(currentContact.contact_id, message);
-        } else {
-            showToast('Failed to send message', 'error');
-            messageInput.value = message; // Restore message if failed
-        }
-    } catch (error) {
-        showToast('Connection error', 'error');
-        messageInput.value = message; // Restore message if failed
-    }
-}
-
-// ==================== MESSAGE ACTIONS ====================
-function showMessageMenu(e, message) {
-    e.preventDefault();
-    
-    const menu = document.getElementById('messageMenu');
-    selectedMessageId = message.id;
-    
-    menu.style.display = 'block';
-    menu.style.left = e.pageX + 'px';
-    menu.style.top = e.pageY + 'px';
-    
-    // Adjust position if menu goes off-screen
-    const rect = menu.getBoundingClientRect();
-    if (rect.right > window.innerWidth) {
-        menu.style.left = (e.pageX - rect.width) + 'px';
-    }
-    if (rect.bottom > window.innerHeight) {
-        menu.style.top = (e.pageY - rect.height) + 'px';
-    }
-}
-
-async function editMessage() {
-    const messageElement = document.querySelector(`[data-message-id="${selectedMessageId}"]`);
-    const messageText = messageElement.querySelector('.message-text').textContent;
-    
-    const newMessage = prompt('Edit message:', messageText);
-    
-    if (newMessage && newMessage !== messageText) {
-        try {
-            const response = await apiFetch(`/api/messages/${selectedMessageId}`, {
-                method: 'PUT',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ message: newMessage })
-            });
-            
-            if (response.ok) {
-                messageElement.querySelector('.message-text').textContent = newMessage;
-                
-                // Add edited indicator
-                const messageInfo = messageElement.querySelector('.message-info');
-                if (!messageInfo.textContent.includes('edited')) {
-                    const timeSpan = messageInfo.querySelector('.message-time');
-                    timeSpan.textContent += ' (edited)';
-                }
-                
-                showToast('Message edited', 'success');
-            } else {
-                showToast('Failed to edit message', 'error');
-            }
-        } catch (error) {
-            showToast('Connection error', 'error');
-        }
-    }
-    
-    document.getElementById('messageMenu').style.display = 'none';
-}
-
-async function deleteMessage() {
-    if (confirm('Delete this message?')) {
-        try {
-            const response = await apiFetch(`/api/messages/${selectedMessageId}`, {
-                method: 'DELETE'
-            });
-            
-            if (response.ok) {
-                const messageElement = document.querySelector(`[data-message-id="${selectedMessageId}"]`);
-                messageElement.remove();
-                showToast('Message deleted', 'success');
-            } else {
-                showToast('Failed to delete message', 'error');
-            }
-        } catch (error) {
-            showToast('Connection error', 'error');
-        }
-    }
-    
-    document.getElementById('messageMenu').style.display = 'none';
-}
-
-function copyMessage() {
-    const messageElement = document.querySelector(`[data-message-id="${selectedMessageId}"]`);
-    const messageText = messageElement.querySelector('.message-text').textContent;
-    
-    navigator.clipboard.writeText(messageText).then(() => {
-        showToast('Message copied', 'success');
-    });
-    
-    document.getElementById('messageMenu').style.display = 'none';
-}
-
-function forwardMessage() {
-    // Implement forward functionality
-    showToast('Forward feature coming soon', 'warning');
-    document.getElementById('messageMenu').style.display = 'none';
-}
-
-// ==================== TYPING INDICATOR ====================
-function handleTyping() {
-    if (!socket || !currentConversation || !currentContact) return;
-    
-    const messageInput = document.getElementById('messageInput');
-    
-    if (messageInput.value.trim() && !isTyping) {
-        socket.emit('typing', {
-            conversationId: currentConversation,
-            receiverId: currentContact.contact_id
-        });
-        isTyping = true;
-    }
-    
-    clearTimeout(typingTimer);
-    typingTimer = setTimeout(() => {
-        if (isTyping) {
-            socket.emit('stopTyping', {
-                conversationId: currentConversation,
-                receiverId: currentContact.contact_id
-            });
-            isTyping = false;
-        }
-    }, 1000);
-}
-
-function showTypingIndicator(data) {
-    if (data.conversationId === currentConversation) {
-        document.getElementById('typingIndicator').style.display = 'flex';
-    }
-}
-
-function hideTypingIndicator(data) {
-    if (data.conversationId === currentConversation) {
-        document.getElementById('typingIndicator').style.display = 'none';
-    }
-}
-
-// ==================== REAL-TIME UPDATES ====================
-function handleNewMessage(data) {
-    // Update messages if in same conversation
-    if (data.conversationId === currentConversation) {
-        const messageElement = createMessageElement(data);
-        document.getElementById('messagesArea').appendChild(messageElement);
-        
-        // Scroll to bottom
-        const messagesArea = document.getElementById('messagesArea');
-        messagesArea.scrollTop = messagesArea.scrollHeight;
-        
-        // Send read receipt
-        if (socket && data.sender_id !== currentUser.id) {
-            socket.emit('markAsRead', {
-                messageId: data.id,
-                senderId: data.sender_id
-            });
-        }
-    }
-    
-    // Update contact list
-    updateContactLastMessage(data.sender_id, data.message);
-    
-    // Show notification if not in conversation
-    if (data.conversationId !== currentConversation && data.sender_id !== currentUser.id) {
-        showNotification(data);
-    }
-}
-
-function handleMessageEdited(data) {
-    if (data.conversationId === currentConversation) {
-        const messageElement = document.querySelector(`[data-message-id="${data.messageId}"]`);
-        if (messageElement) {
-            messageElement.querySelector('.message-text').textContent = data.message;
-            
-            const messageInfo = messageElement.querySelector('.message-info');
-            if (!messageInfo.textContent.includes('edited')) {
-                const timeSpan = messageInfo.querySelector('.message-time');
-                timeSpan.textContent += ' (edited)';
-            }
-        }
-    }
-}
-
-function handleMessageDeleted(data) {
-    if (data.conversationId === currentConversation) {
-        const messageElement = document.querySelector(`[data-message-id="${data.messageId}"]`);
-        if (messageElement) {
-            messageElement.remove();
-        }
-    }
-}
-
-function updateUserStatus(userId, isOnline) {
-    const contact = contacts.find(c => c.contact_id === userId);
-    if (contact) {
-        contact.is_online = isOnline;
-        
-        // Update UI
-        const contactElement = document.querySelector(`[data-contact-id="${userId}"]`);
-        if (contactElement) {
-            const indicator = contactElement.querySelector('.online-indicator');
-            if (isOnline && !indicator) {
-                // Add online indicator
-                const avatarContainer = contactElement.querySelector('.contact-avatar').parentElement;
-                const span = document.createElement('span');
-                span.className = 'online-indicator';
-                avatarContainer.appendChild(span);
-            } else if (!isOnline && indicator) {
-                // Remove online indicator
-                indicator.remove();
-            }
-        }
-        
-        // Update chat header if current contact
-        if (currentContact && currentContact.contact_id === userId) {
-            const statusText = isOnline ? 'Online' : 
-                `Last seen ${formatLastSeen(new Date().toISOString())}`;
-            document.getElementById('contactStatus').textContent = statusText;
-        }
-    }
-}
-
-function updateContactLastMessage(contactId, message) {
-    const contact = contacts.find(c => c.contact_id === contactId);
-    if (contact) {
-        contact.last_message = message;
-        contact.last_message_time = new Date().toISOString();
-        
-        // Re-render contacts list
-        displayContacts();
-    }
-}
-
-function updateMessageStatus(messageId, status) {
-    const messageElement = document.querySelector(`[data-message-id="${messageId}"]`);
-    if (messageElement) {
-        const statusIcon = messageElement.querySelector('.message-info span:last-child');
-        if (statusIcon) {
-            if (status === 'read') {
-                statusIcon.innerHTML = '<span style="color: #4ECDC4;">✓✓</span>';
-            }
-        }
-    }
-}
-
-// ==================== UTILITIES ====================
-function validatePhoneNumber(phone) {
-    // Accept common formats (spaces, dashes, dots, brackets, +country code).
-    // Rule: 7-15 digits once separators are stripped.
-    const digits = String(phone).replace(/[\s\-\.\(\)]/g, '').replace(/^\+/, '');
-    return /^[0-9]{7,15}$/.test(digits);
-}
-
-function formatMessageTime(timestamp) {
-    const date = new Date(timestamp);
+function listTime(value) {
+    if (!value) return '';
+    const d = parseTime(value);
     const now = new Date();
-    const diffMs = now - date;
-    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-    
-    if (diffDays === 0) {
-        // Today - show time
-        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    } else if (diffDays === 1) {
-        return 'Yesterday';
-    } else if (diffDays < 7) {
-        // This week - show day name
-        return date.toLocaleDateString([], { weekday: 'short' });
-    } else {
-        // Older - show date
-        return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
-    }
+    const sameDay = d.toDateString() === now.toDateString();
+    if (sameDay) return clockTime(d);
+    const yest = new Date(now); yest.setDate(now.getDate() - 1);
+    if (d.toDateString() === yest.toDateString()) return 'Yesterday';
+    return d.toLocaleDateString([], { day: '2-digit', month: '2-digit', year: '2-digit' });
 }
 
-function formatLastSeen(timestamp) {
-    const date = new Date(timestamp);
+function dayLabel(value) {
+    const d = parseTime(value);
     const now = new Date();
-    const diffMs = now - date;
-    const diffMins = Math.floor(diffMs / (1000 * 60));
-    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-    
-    if (diffMins < 1) {
-        return 'just now';
-    } else if (diffMins < 60) {
-        return `${diffMins} minute${diffMins > 1 ? 's' : ''} ago`;
-    } else if (diffHours < 24) {
-        return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
-    } else if (diffDays < 7) {
-        return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
-    } else {
-        return date.toLocaleDateString();
-    }
+    if (d.toDateString() === now.toDateString()) return 'Today';
+    const yest = new Date(now); yest.setDate(now.getDate() - 1);
+    if (d.toDateString() === yest.toDateString()) return 'Yesterday';
+    return d.toLocaleDateString([], { day: 'numeric', month: 'long', year: 'numeric' });
 }
 
-function formatDateSeparator(dateString) {
-    const date = new Date(dateString);
-    const today = new Date();
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-    
-    if (date.toDateString() === today.toDateString()) {
-        return 'Today';
-    } else if (date.toDateString() === yesterday.toDateString()) {
-        return 'Yesterday';
-    } else {
-        return date.toLocaleDateString([], { 
-            weekday: 'long', 
-            month: 'long', 
-            day: 'numeric' 
-        });
-    }
-}
-
-function escapeHtml(text) {
-    const map = {
-        '&': '&amp;',
-        '<': '&lt;',
-        '>': '&gt;',
-        '"': '&quot;',
-        "'": '&#039;'
-    };
-    return text.replace(/[&<>"']/g, m => map[m]);
-}
-
-function showToast(message, type = 'info') {
-    const toast = document.getElementById('toast');
-    toast.textContent = message;
-    toast.className = `toast show ${type}`;
-    
-    setTimeout(() => {
-        toast.classList.remove('show');
-    }, 3000);
-}
-
-function showNotification(message) {
-    // Check if browser supports notifications
-    if (!('Notification' in window)) {
-        return;
-    }
-    
-    // Request permission if needed
-    if (Notification.permission === 'default') {
-        Notification.requestPermission();
-    }
-    
-    // Show notification if permitted
-    if (Notification.permission === 'granted') {
-        const notification = new Notification('New Message', {
-            body: `${message.sender_name}: ${message.message}`,
-            icon: '/icon-192x192.png',
-            badge: '/badge-72x72.png',
-            vibrate: [200, 100, 200]
-        });
-        
-        notification.onclick = () => {
-            window.focus();
-            const contact = contacts.find(c => c.contact_id === message.sender_id);
-            if (contact) {
-                openConversation(contact);
-            }
-            notification.close();
-        };
-        
-        setTimeout(() => notification.close(), 5000);
-    }
-}
-
-// ==================== ADDITIONAL FEATURES ====================
-function openSettings() {
-    showToast('Settings feature coming soon', 'warning');
-}
-
-async function deleteConversation() {
-    if (!currentConversation) return;
-    try {
-        const res = await apiFetch(`/api/conversations/${currentConversation}`, { method: 'DELETE' });
-        if (res.ok) {
-            showToast('Conversation cleared', 'success');
-            document.getElementById('chatView').style.display = 'none';
-            document.getElementById('welcomeScreen').style.display = 'flex';
-            currentContact = null;
-            currentConversation = null;
-            loadContacts();
-        } else {
-            showToast('Failed to clear conversation', 'error');
-        }
-    } catch (e) { /* apiFetch already handled auth errors */ }
-}
-
-// Chat header overflow menu: offer the useful destructive action.
-function openChatMenu() {
-    if (!currentContact) return;
-    const name = currentContact.contact_name || currentContact.user_name;
-    if (confirm(`Clear this conversation with ${name}?\n\nThis removes it from your chat list.`)) {
-        deleteConversation();
-    }
-}
-
-// ==================== EMOJI PICKER ====================
-const EMOJI_SETS = {
-    'Smileys': '😀 😃 😄 😁 😆 😅 🤣 😂 🙂 🙃 😉 😊 😇 🥰 😍 🤩 😘 😗 😚 😙 😋 😛 😜 🤪 😝 🤗 🤭 🤔 🤐 😐 😑 😶 😏 😒 🙄 😬 😌 😔 😪 😴 😷 🤒 🤕 🤢 🥳 😎 🤓 🧐 😕 😟 🙁 😮 😯 😲 😳 🥺 😦 😧 😨 😰 😥 😢 😭 😱 😖 😣 😞 😓 😩 😫 🥱 😤 😡 😠 🤬 😈 💀 💩 🤡',
-    'Gestures': '👍 👎 👌 🤌 🤏 ✌️ 🤞 🤟 🤘 🤙 👈 👉 👆 👇 ☝️ ✋ 🤚 🖐️ 🖖 👋 🤝 🙏 ✍️ 💪 🦾 👏 🙌 👐 🤲 🫶 ❤️ 🧡 💛 💚 💙 💜 🖤 🤍 💔 💕 💞 💓 💗 💖 💘 💝',
-    'People': '👶 🧒 👦 👧 🧑 👨 👩 🧓 👴 👵 👮 🕵️ 💂 👷 🤴 👸 🤵 👰 🤰 🎅 🦸 🦹 🧙 🧚 🧛 🧜 🧝 👻 👽 🤖 🙋 🙅 🙆 💁 🙇 🤦 🤷 💃 🕺 👯 🧘 🏃 🚶',
-    'Nature': '🐶 🐱 🐭 🐹 🐰 🦊 🐻 🐼 🐨 🐯 🦁 🐮 🐷 🐸 🐵 🙈 🙉 🙊 🐒 🦄 🐝 🐛 🦋 🐌 🐞 🐢 🐍 🦖 🐙 🦑 🦐 🦀 🐠 🐟 🐬 🐳 🐋 🦈 🐊 🐅 🐆 🦓 🦍 🐘 🦒 🐄 🐎 🌵 🎄 🌲 🌳 🌴 🌱 🌿 ☘️ 🍀 🎍 🌺 🌸 🌼 🌻 🌞 🌝 🌚 🌙 ⭐ 🌟 ✨ ⚡ 🔥 🌈 ☀️ ⛅ ☁️ 🌧️ ⛈️ ❄️ ⛄ 💧 🌊',
-    'Food': '🍏 🍎 🍐 🍊 🍋 🍌 🍉 🍇 🍓 🫐 🍈 🍒 🍑 🥭 🍍 🥥 🥝 🍅 🥑 🍆 🥔 🥕 🌽 🌶️ 🥒 🥬 🥦 🧄 🧅 🍄 🥜 🌰 🍞 🥐 🥖 🥨 🧀 🥚 🍳 🧈 🥞 🧇 🥓 🍔 🍟 🍕 🌭 🥪 🌮 🌯 🥗 🍝 🍜 🍲 🍛 🍣 🍱 🥟 🍤 🍙 🍚 🍦 🍰 🎂 🍫 🍬 🍭 🍩 🍪 ☕ 🍵 🧃 🥤 🍺 🍻 🥂 🍷 🥃',
-    'Activity': '⚽ 🏀 🏈 ⚾ 🥎 🎾 🏐 🏉 🥏 🎱 🏓 🏸 🏒 🏑 🥍 🏏 🥅 ⛳ 🏹 🎣 🥊 🥋 🎽 🛹 🛼 🛷 ⛸️ 🥌 🎿 ⛷️ 🏂 🏋️ 🤼 🤸 🤺 🤾 🏌️ 🏇 🧗 🚴 🚵 🎪 🎭 🎨 🎬 🎤 🎧 🎼 🎹 🥁 🎷 🎺 🎸 🪕 🎻 🎲 ♟️ 🎯 🎳 🎮 🎰',
-    'Travel': '🚗 🚕 🚙 🚌 🚎 🏎️ 🚓 🚑 🚒 🚐 🚚 🚛 🚜 🛴 🚲 🛵 🏍️ 🚨 🚔 🚍 🚘 🚖 🚡 🚠 🚟 🚃 🚋 🚞 🚝 🚄 🚅 🚈 🚂 🚆 🚇 🚊 🚉 ✈️ 🛫 🛬 🛩️ 💺 🛰️ 🚀 🛸 🚁 🛶 ⛵ 🚤 🛥️ 🛳️ ⛴️ 🚢 ⚓ 🗺️ 🗿 🗽 🗼 🏰 🏯 🏟️ 🎡 🎢 🎠 ⛲ ⛱️ 🏖️ 🏝️ 🏜️ 🌋 ⛰️ 🏔️ 🗻 🏕️ ⛺ 🏠 🏡 🏘️ 🏢 🏬 🏣 🏤 🏥 🏦 🏨 🏪 🏫 🏩 💒 🏛️ ⛪ 🕌 🕍 🛕 🕋',
-    'Objects': '⌚ 📱 💻 ⌨️ 🖥️ 🖨️ 🖱️ 💽 💾 💿 📀 📷 📸 📹 🎥 📞 ☎️ 📟 📠 📺 📻 🧭 ⏰ ⏱️ ⌛ ⏳ 🔋 🔌 💡 🔦 🕯️ 🧯 🛢️ 💸 💵 💴 💶 💷 🪙 💰 💳 💎 ⚖️ 🧰 🔧 🔨 ⚒️ 🛠️ ⛏️ 🔩 ⚙️ 🧱 ⛓️ 🧲 🔫 💣 🧨 🔪 🗡️ ⚔️ 🛡️ 🚬 ⚰️ 🏺 🔮 📿 🧿 💈 ⚗️ 🔭 🔬 🕳️ 💊 💉 🩹 🩺 🌡️ 🧹 🧺 🧻 🚽 🚰 🚿 🛁 🧼 🪒 🧽 🔑 🗝️ 🚪 🪑 🛋️ 🛏️ 🧸 🖼️ 🛍️ 🎁 🎈 🎏 🎀 🎉 🎊 🎎 🏮 📩 📨 📧 💌 📮 📪 📫 📬 📭 📦 📯 📜 📃 📄 📑 📊 📈 📉 🗒️ 🗓️ 📆 📅 📇 🗃️ 🗳️ 🗄️ 📋 📁 📂 🗂️ 📰 📓 📔 📒 📕 📗 📘 📙 📚 📖 🔖 🔗 📎 🖇️ 📐 📏 📌 📍 ✂️ 🖊️ 🖋️ ✒️ 🖌️ 🖍️ 📝 ✏️ 🔍 🔎 🔏 🔐 🔒 🔓',
-    'Symbols': '❤️ 🧡 💛 💚 💙 💜 🖤 🤍 🤎 💔 ❣️ 💕 💞 💓 💗 💖 💘 💝 💟 ☮️ ✝️ ☪️ 🕉️ ☸️ ✡️ 🔯 🕎 ☯️ ☦️ ⛎ ♈ ♉ ♊ ♋ ♌ ♍ ♎ ♏ ♐ ♑ ♒ ♓ 🆔 ⚛️ 🉑 ☢️ ☣️ 📴 📳 🈶 🈚 🈸 🈺 🈷️ ✴️ 🆚 💮 🉐 ㊙️ ㊗️ 🈴 🈵 🈹 🈲 🅰️ 🅱️ 🆎 🆑 🅾️ 🆘 ❌ ⭕ 🛑 ⛔ 📛 🚫 💯 💢 ♨️ 🚷 🚯 🚳 🚱 🔞 📵 🚭 ❗ ❕ ❓ ❔ ‼️ ⁉️ 🔅 🔆 〽️ ⚠️ 🚸 🔱 ⚜️ 🔰 ♻️ ✅ 🈯 💹 ❇️ ✳️ ❎ 🌐 💠 Ⓜ️ 🌀 💤 🏧 🚾 ♿ 🅿️ 🈳 🈂️ 🛂 🛃 🛄 🛅 🚹 🚺 🚼 ⚧️ 🚻 🚮 🎦 📶 🈁 🔣 ℹ️ 🔤 🔡 🔠 🆖 🆗 🆙 🆒 🆕 🆓 0️⃣ 1️⃣ 2️⃣ 3️⃣ 4️⃣ 5️⃣ 6️⃣ 7️⃣ 8️⃣ 9️⃣ 🔟'
-};
-
-let emojiReady = false;
-
-function buildEmojiPicker() {
-    if (emojiReady) return;
-    const tabs = document.getElementById('emojiTabs');
-    const grid = document.getElementById('emojiGrid');
-    const names = Object.keys(EMOJI_SETS);
-
-    tabs.innerHTML = names.map((n, i) =>
-        `<button class="emoji-tab${i === 0 ? ' active' : ''}" onclick="showEmojiGroup('${n}', this)">${EMOJI_SETS[n].split(' ')[0]}</button>`
-    ).join('');
-
-    const render = (name) => {
-        grid.innerHTML = EMOJI_SETS[name].split(' ').filter(Boolean)
-            .map(e => `<button class="emoji-cell" onclick="insertEmoji('${e}')">${e}</button>`).join('');
-    };
-    window.showEmojiGroup = (name, btn) => {
-        document.querySelectorAll('.emoji-tab').forEach(t => t.classList.remove('active'));
-        if (btn) btn.classList.add('active');
-        render(name);
-    };
-    render(names[0]);
-    emojiReady = true;
-}
-
-function toggleEmoji() {
-    buildEmojiPicker();
-    const panel = document.getElementById('emojiPanel');
-    document.getElementById('attachSheet').classList.remove('open');
-    panel.classList.toggle('open');
-}
-
-function insertEmoji(emoji) {
-    const input = document.getElementById('messageInput');
-    const start = input.selectionStart ?? input.value.length;
-    const end = input.selectionEnd ?? input.value.length;
-    input.value = input.value.slice(0, start) + emoji + input.value.slice(end);
-    input.focus();
-    const pos = start + emoji.length;
-    input.setSelectionRange(pos, pos);
-}
-
-// ==================== ATTACHMENTS ====================
-function toggleAttach() {
-    document.getElementById('emojiPanel').classList.remove('open');
-    document.getElementById('attachSheet').classList.toggle('open');
-}
-
-function pickFile(accept) {
-    const input = document.getElementById('fileInput');
-    input.accept = accept;
-    input.value = '';
-    input.click();
-    document.getElementById('attachSheet').classList.remove('open');
-}
-
-function humanSize(bytes) {
+function fileSize(bytes) {
+    if (!bytes && bytes !== 0) return '';
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1048576) return (bytes / 1024).toFixed(0) + ' KB';
     return (bytes / 1048576).toFixed(1) + ' MB';
 }
 
-function kindFromFile(name, mime) {
-    if (/^image\//.test(mime) || /\.(jpe?g|png|gif|webp|bmp|svg)$/i.test(name)) return 'image';
-    if (/^video\//.test(mime) || /\.(mp4|webm|mov|avi|mkv)$/i.test(name)) return 'video';
-    if (/^audio\//.test(mime) || /\.(mp3|wav|ogg|oga|m4a|aac|opus|flac)$/i.test(name)) return 'audio';
+function kindOf(file) {
+    const n = file.name || '';
+    const m = file.type || '';
+    if (/^image\//.test(m) || /\.(jpe?g|png|gif|webp|bmp|svg|avif)$/i.test(n)) return 'image';
+    if (/^video\//.test(m) || /\.(mp4|webm|mov|avi|mkv)$/i.test(n)) return 'video';
+    if (/^audio\//.test(m) || /\.(mp3|wav|ogg|oga|m4a|aac|opus|flac)$/i.test(n)) return 'audio';
     return 'file';
 }
 
-async function uploadAndSend(file, forcedType) {
-    if (!currentContact) { showToast('Open a chat first', 'warning'); return; }
+const preview = (m) => {
+    if (!m) return '';
+    if (m.last_kind === 'image') return '📷 Photo';
+    if (m.last_kind === 'video') return '🎬 Video';
+    if (m.last_kind === 'audio') return '🎤 Voice note';
+    if (m.last_kind === 'file') return '📄 Document';
+    return m.last_message || '';
+};
 
-    const type = forcedType || kindFromFile(file.name, file.type);
-    showToast('Uploading ' + (file.name || 'voice note') + '...', 'warning');
+// ------------------------------------------------------------- auth ----
 
-    const form = new FormData();
-    form.append('file', file, file.name || 'voice-note.webm');
+function showAuth() {
+    $('appScreen').hidden = true;
+    $('authScreen').hidden = false;
+}
+
+function showApp() {
+    $('authScreen').hidden = true;
+    $('appScreen').hidden = false;
+}
+
+function signOut(expired) {
+    store.clear('token');
+    store.clear('me');
+    if (state.socket) { try { state.socket.disconnect(); } catch {} }
+    Object.assign(state, {
+        me: null, socket: null, contacts: [], peer: null,
+        conversationId: null, onlineIds: new Set(), editingId: null
+    });
+    showAuth();
+    if (expired) toast('Please sign in again', 'warn');
+}
+
+async function boot() {
+    const saved = store.get('me');
+    if (!token() || !saved) { showAuth(); return; }
 
     try {
-        const res = await apiFetch('/api/upload', { method: 'POST', body: form });
-        const data = await res.json();
-        if (!res.ok) { showToast(data.error || 'Upload failed', 'error'); return; }
+        state.me = JSON.parse(saved);
+    } catch {
+        signOut();
+        return;
+    }
 
-        const caption = type === 'file'
-            ? `${data.originalName} (${humanSize(data.size)})`
-            : (type === 'audio' ? 'Voice note' : data.originalName);
-
-        const sent = await apiFetch('/api/messages/send', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                receiverId: currentContact.contact_id,
-                message: caption,
-                type,
-                fileUrl: data.url
-            })
-        });
-
-        if (sent.ok) {
-            const msg = await sent.json();
-            const el = createMessageElement(msg);
-            const area = document.getElementById('messagesArea');
-            area.appendChild(el);
-            area.scrollTop = area.scrollHeight;
-            updateContactLastMessage(currentContact.contact_id, caption);
-        } else {
-            showToast('Failed to send attachment', 'error');
-        }
-    } catch (e) {
-        showToast('Upload failed', 'error');
+    showApp();
+    paintMe();
+    try {
+        // Confirm the token is still valid before trusting the cached profile.
+        state.me = await api('/api/me');
+        store.set('me', JSON.stringify(state.me));
+        paintMe();
+        connectSocket();
+        await loadContacts();
+    } catch (err) {
+        if (err.message !== 'Session expired') toast(err.message, 'err');
     }
 }
 
-// ==================== VOICE NOTES ====================
-let mediaRecorder = null, recordedChunks = [], recTimer = null, recSeconds = 0, recCancelled = false;
+async function authenticate(path, payload, button) {
+    button.disabled = true;
+    const original = button.textContent;
+    button.textContent = 'Please wait…';
+    try {
+        const data = await api(path, { method: 'POST', body: payload });
+        store.set('token', data.token);
+        store.set('me', JSON.stringify(data.user));
+        state.me = data.user;
+        showApp();
+        paintMe();
+        connectSocket();
+        await loadContacts();
+        toast(`Welcome, ${data.user.name}`, 'ok');
+    } catch (err) {
+        // A duplicate signup should guide the user to sign in, not dead-end.
+        if (/already registered/i.test(err.message)) {
+            $('siPhone').value = $('suPhone').value;
+            switchTab('signin');
+            $('siPass').focus();
+            toast('That number already has an account — please sign in', 'warn');
+        } else {
+            toast(err.message, 'err');
+        }
+    } finally {
+        button.disabled = false;
+        button.textContent = original;
+    }
+}
+
+function switchTab(which) {
+    const signin = which === 'signin';
+    $('tabSignin').classList.toggle('is-active', signin);
+    $('tabSignup').classList.toggle('is-active', !signin);
+    $('signinForm').classList.toggle('is-active', signin);
+    $('signupForm').classList.toggle('is-active', !signin);
+}
+
+function paintMe() {
+    if (!state.me) return;
+    $('meName').textContent = state.me.name;
+    $('meAbout').textContent = state.me.about || 'Available';
+    $('meAvatar').src = avatarFor(state.me.name, state.me.avatar);
+}
+
+// ----------------------------------------------------------- socket ----
+
+function connectSocket() {
+    if (state.socket) { try { state.socket.disconnect(); } catch {} }
+
+    const socket = io({ auth: { token: token() } });
+    state.socket = socket;
+
+    socket.on('connect_error', () => { /* transport retries automatically */ });
+
+    socket.on('presence:bulk', (ids) => {
+        state.onlineIds = new Set(ids);
+        renderChatList();
+        paintPeerStatus();
+    });
+
+    socket.on('presence', ({ userId, online }) => {
+        if (online) state.onlineIds.add(userId); else state.onlineIds.delete(userId);
+        renderChatList();
+        paintPeerStatus();
+    });
+
+    socket.on('contacts:changed', () => loadContacts());
+
+    socket.on('message:new', (msg) => {
+        const mine = msg.sender_id === state.me.id;
+        const otherId = mine ? msg.receiver_id : msg.sender_id;
+
+        if (state.peer && otherId === state.peer.contact_id) {
+            appendMessage(msg);
+            scrollDown();
+            if (!mine) socket.emit('messages:seen', { conversationId: msg.conversation_id });
+        } else if (!mine) {
+            const from = state.contacts.find((c) => c.contact_id === msg.sender_id);
+            toast(`${from ? from.name : 'New message'}: ${msg.body || 'Attachment'}`.slice(0, 70));
+        }
+        loadContacts();
+    });
+
+    socket.on('message:updated', (msg) => {
+        const node = document.querySelector(`[data-mid="${msg.id}"]`);
+        if (node) node.replaceWith(buildMessage(msg));
+        loadContacts();
+    });
+
+    socket.on('messages:read', ({ conversationId }) => {
+        if (conversationId !== state.conversationId) return;
+        document.querySelectorAll('.tick').forEach((t) => {
+            t.textContent = '✓✓';
+            t.classList.add('read');
+        });
+    });
+
+    socket.on('typing', ({ from, typing }) => {
+        if (!state.peer || from !== state.peer.contact_id) return;
+        $('typingRow').hidden = !typing;
+        if (typing) scrollDown();
+    });
+
+    bindCallSignals(socket);
+}
+
+// --------------------------------------------------------- contacts ----
+
+async function loadContacts() {
+    try {
+        state.contacts = await api('/api/contacts');
+        renderChatList();
+    } catch { /* api() surfaces the error */ }
+}
+
+function renderChatList() {
+    const box = $('chatList');
+    const term = $('chatSearch').value.trim().toLowerCase();
+
+    const rows = state.contacts.filter((c) =>
+        !term || c.name.toLowerCase().includes(term) || c.phone.includes(term));
+
+    if (!rows.length) {
+        box.innerHTML = `<div class="hint">
+            <div class="hi">💬</div>
+            <b>${term ? 'No matches' : 'No chats yet'}</b>
+            <p>${term ? 'Try a different name or number.' : 'Tap the new-chat button to find people and start talking.'}</p>
+        </div>`;
+        return;
+    }
+
+    box.innerHTML = rows.map((c) => {
+        const online = state.onlineIds.has(c.contact_id);
+        const active = state.peer && state.peer.contact_id === c.contact_id;
+        return `
+        <div class="row${active ? ' is-active' : ''}" data-cid="${c.contact_id}">
+            <div class="row-avatar">
+                <img src="${avatarFor(c.name, c.avatar)}" alt="">
+                ${online ? '<span class="presence"></span>' : ''}
+            </div>
+            <div class="row-body">
+                <div class="row-top">
+                    <strong>${esc(c.name)}</strong>
+                    <span class="row-time">${listTime(c.last_at)}</span>
+                </div>
+                <div class="row-bottom">
+                    <span class="row-msg">${esc(preview(c)) || '<i>Tap to chat</i>'}</span>
+                    ${c.unread ? `<span class="badge">${c.unread}</span>` : ''}
+                </div>
+            </div>
+        </div>`;
+    }).join('');
+
+    box.querySelectorAll('.row').forEach((row) => {
+        row.onclick = () => {
+            const c = state.contacts.find((x) => x.contact_id === Number(row.dataset.cid));
+            if (c) openChat(c);
+        };
+    });
+}
+
+// ------------------------------------------------------------- chat ----
+
+async function openChat(contact) {
+    state.peer = contact;
+    state.conversationId = contact.conversation_id;
+    cancelEdit();
+
+    $('emptyState').hidden = true;
+    $('chatView').hidden = false;
+    $('appScreen').classList.add('viewing');
+    $('typingRow').hidden = true;
+
+    $('peerName').textContent = contact.name;
+    $('peerAvatar').src = avatarFor(contact.name, contact.avatar);
+    paintPeerStatus();
+    renderChatList();
+
+    $('messages').innerHTML = '<div class="hint"><p>Loading…</p></div>';
+
+    try {
+        if (!state.conversationId) {
+            const r = await api('/api/contacts', { method: 'POST', body: { userId: contact.contact_id } });
+            state.conversationId = r.conversationId;
+            contact.conversation_id = r.conversationId;
+        }
+        const list = await api(`/api/messages/${state.conversationId}`);
+        renderMessages(list);
+        loadContacts();
+    } catch (err) {
+        $('messages').innerHTML = `<div class="hint"><b>Couldn't load messages</b><p>${esc(err.message)}</p></div>`;
+    }
+}
+
+function closeChat() {
+    state.peer = null;
+    state.conversationId = null;
+    $('chatView').hidden = true;
+    $('emptyState').hidden = false;
+    $('appScreen').classList.remove('viewing');
+    renderChatList();
+}
+
+function paintPeerStatus() {
+    if (!state.peer) return;
+    const online = state.onlineIds.has(state.peer.contact_id);
+    const el = $('peerStatus');
+    el.textContent = online ? 'online' : 'offline';
+    el.classList.toggle('online', online);
+}
+
+function renderMessages(list) {
+    const box = $('messages');
+    box.innerHTML = '';
+
+    if (!list.length) {
+        box.innerHTML = `<div class="hint">
+            <div class="hi">👋</div><b>Say hello</b>
+            <p>This is the start of your conversation.</p></div>`;
+        return;
+    }
+
+    let lastDay = '';
+    list.forEach((m) => {
+        const day = dayLabel(m.created_at);
+        if (day !== lastDay) {
+            const d = document.createElement('div');
+            d.className = 'day';
+            d.textContent = day;
+            box.appendChild(d);
+            lastDay = day;
+        }
+        box.appendChild(buildMessage(m));
+    });
+    scrollDown(true);
+}
+
+function attachmentHtml(m) {
+    if (!m.file_url) return '';
+    const url = esc(m.file_url);
+    if (m.kind === 'image') {
+        return `<a href="${url}" target="_blank" rel="noopener"><img class="att-img" src="${url}" alt="" loading="lazy"></a>`;
+    }
+    if (m.kind === 'video') {
+        return `<video class="att-vid" src="${url}" controls preload="metadata"></video>`;
+    }
+    if (m.kind === 'audio') {
+        return `<audio class="att-aud" src="${url}" controls preload="metadata"></audio>`;
+    }
+    return `<a class="att-file" href="${url}" target="_blank" rel="noopener" download>
+                <span class="fi">📄</span>
+                <span><b>${esc(m.file_name || 'Document')}</b><small>${fileSize(m.file_size)}</small></span>
+            </a>`;
+}
+
+function buildMessage(m) {
+    const mine = m.sender_id === state.me.id;
+    const wrap = document.createElement('div');
+    wrap.className = `msg ${mine ? 'out' : 'in'}`;
+    wrap.dataset.mid = m.id;
+
+    if (m.is_deleted) {
+        wrap.innerHTML = `<div class="bubble"><span class="deleted">🚫 This message was deleted</span>
+            <div class="meta">${clockTime(m.created_at)}</div></div>`;
+        return wrap;
+    }
+
+    const media = m.file_url && m.kind !== 'file';
+    const tick = mine
+        ? `<span class="tick${m.read_at ? ' read' : ''}">${m.read_at || m.delivered_at ? '✓✓' : '✓'}</span>`
+        : '';
+
+    wrap.innerHTML = `
+        <div class="bubble${media ? ' media' : ''}">
+            ${attachmentHtml(m)}
+            ${m.body ? `<div class="text">${esc(m.body)}</div>` : ''}
+            <div class="meta">
+                ${m.is_edited ? '<span>edited</span>' : ''}
+                <span>${clockTime(m.created_at)}</span>${tick}
+            </div>
+        </div>`;
+
+    if (mine) {
+        const open = (e) => { e.preventDefault(); openMsgMenu(e, m); };
+        wrap.addEventListener('contextmenu', open);
+        // Long-press for touch devices.
+        let timer;
+        wrap.addEventListener('touchstart', (e) => { timer = setTimeout(() => open(e), 550); }, { passive: true });
+        wrap.addEventListener('touchend', () => clearTimeout(timer));
+        wrap.addEventListener('touchmove', () => clearTimeout(timer));
+    }
+    return wrap;
+}
+
+function appendMessage(m) {
+    const box = $('messages');
+    if (box.querySelector('.hint')) box.innerHTML = '';
+    box.appendChild(buildMessage(m));
+}
+
+function scrollDown(instant) {
+    const box = $('messages');
+    requestAnimationFrame(() => {
+        if (typeof box.scrollTo === 'function') {
+            box.scrollTo({ top: box.scrollHeight, behavior: instant ? 'auto' : 'smooth' });
+        } else {
+            box.scrollTop = box.scrollHeight;
+        }
+    });
+}
+
+// ---------------------------------------------------------- sending ----
+
+async function sendText() {
+    const input = $('msgInput');
+    const body = input.value.trim();
+    if (!body || !state.peer) return;
+
+    // Editing an existing message.
+    if (state.editingId) {
+        const id = state.editingId;
+        cancelEdit();
+        input.value = '';
+        try { await api(`/api/messages/${id}`, { method: 'PUT', body: { body } }); }
+        catch (err) { toast(err.message, 'err'); }
+        return;
+    }
+
+    input.value = '';
+    autoGrow();
+    stopTyping();
+
+    try {
+        await api('/api/messages', {
+            method: 'POST',
+            body: { receiverId: state.peer.contact_id, body, kind: 'text' }
+        });
+        // The socket echo renders the bubble, keeping one code path.
+    } catch (err) {
+        toast(err.message, 'err');
+        input.value = body;
+    }
+}
+
+async function sendFile(file, kind) {
+    if (!state.peer) { toast('Open a chat first', 'warn'); return; }
+    if (file.size > 25 * 1024 * 1024) { toast('File is too large (max 25MB)', 'err'); return; }
+
+    const type = kind || kindOf(file);
+    toast('Uploading…');
+
+    try {
+        const form = new FormData();
+        form.append('file', file, file.name || 'voice-note.webm');
+        const up = await api('/api/upload', { method: 'POST', body: form });
+
+        await api('/api/messages', {
+            method: 'POST',
+            body: {
+                receiverId: state.peer.contact_id,
+                body: type === 'audio' ? '' : '',
+                kind: type,
+                fileUrl: up.url,
+                fileName: up.name,
+                fileSize: up.size
+            }
+        });
+    } catch (err) {
+        toast(err.message, 'err');
+    }
+}
+
+// ----------------------------------------------------------- typing ----
+
+function onTyping() {
+    if (!state.peer || !state.socket) return;
+    if (!state.typingSent) {
+        state.typingSent = true;
+        state.socket.emit('typing', {
+            toUserId: state.peer.contact_id,
+            conversationId: state.conversationId,
+            typing: true
+        });
+    }
+    clearTimeout(state.typingTimer);
+    state.typingTimer = setTimeout(stopTyping, 1600);
+}
+
+function stopTyping() {
+    clearTimeout(state.typingTimer);
+    if (!state.typingSent || !state.peer || !state.socket) return;
+    state.typingSent = false;
+    state.socket.emit('typing', {
+        toUserId: state.peer.contact_id,
+        conversationId: state.conversationId,
+        typing: false
+    });
+}
+
+// ------------------------------------------------------ message menu ----
+
+let menuTarget = null;
+
+function openMsgMenu(event, message) {
+    menuTarget = message;
+    const menu = $('msgMenu');
+    menu.hidden = false;
+
+    const x = event.touches ? event.touches[0].clientX : event.clientX;
+    const y = event.touches ? event.touches[0].clientY : event.clientY;
+    const r = menu.getBoundingClientRect();
+    menu.style.left = Math.min(x, window.innerWidth - r.width - 12) + 'px';
+    menu.style.top = Math.min(y, window.innerHeight - r.height - 12) + 'px';
+
+    // Only text messages can be edited.
+    menu.querySelector('[data-act="edit"]').style.display = message.kind === 'text' ? '' : 'none';
+}
+
+function closeMsgMenu() { $('msgMenu').hidden = true; }
+
+function startEdit(message) {
+    state.editingId = message.id;
+    $('editStrip').hidden = false;
+    $('editPreview').textContent = message.body;
+    $('msgInput').value = message.body;
+    $('msgInput').focus();
+    autoGrow();
+}
+
+function cancelEdit() {
+    state.editingId = null;
+    $('editStrip').hidden = true;
+}
+
+// ------------------------------------------------------ people search ---
+
+let searchTimer = null;
+let searchCache = [];
+
+function highlight(text, term) {
+    const safe = esc(text);
+    if (!term) return safe;
+    const pattern = esc(term).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return safe.replace(new RegExp(`(${pattern})`, 'ig'), '<mark>$1</mark>');
+}
+
+function peopleIdle() {
+    $('peopleResults').innerHTML = `<div class="hint">
+        <div class="hi">🔎</div><b>Find someone</b>
+        <p>Type at least 2 characters to search people who have registered.</p></div>`;
+}
+
+function peopleLoading() {
+    $('peopleResults').innerHTML = Array(3).fill(
+        `<div class="skeleton"><div class="sk-c"></div>
+         <div class="sk-lines"><div class="sk-l"></div><div class="sk-l s"></div></div></div>`
+    ).join('');
+}
+
+function runSearch(term) {
+    clearTimeout(searchTimer);
+    const q = term.trim();
+    if (q.length < 2) { peopleIdle(); return; }
+
+    peopleLoading();
+    searchTimer = setTimeout(async () => {
+        try {
+            searchCache = await api(`/api/users/search?q=${encodeURIComponent(q)}`);
+            renderPeople(searchCache, q);
+        } catch (err) {
+            $('peopleResults').innerHTML =
+                `<div class="hint"><b>Search failed</b><p>${esc(err.message)}</p></div>`;
+        }
+    }, 220);
+}
+
+function renderPeople(users, term) {
+    const box = $('peopleResults');
+    if (!users.length) {
+        box.innerHTML = `<div class="hint">
+            <div class="hi">🤷</div><b>Nobody found</b>
+            <p>No one matching “${esc(term)}” has registered yet.</p></div>`;
+        return;
+    }
+
+    box.innerHTML = users.map((u, i) => `
+        <div class="person" style="animation-delay:${i * 30}ms">
+            <img src="${avatarFor(u.name, u.avatar)}" alt="">
+            <div class="pi">
+                <b>${highlight(u.name, term)}</b>
+                <small>${highlight(u.phone, term)}</small>
+            </div>
+            <button class="add-btn${u.is_contact ? ' ghost' : ''}" data-uid="${u.id}">
+                ${u.is_contact ? 'Message' : 'Add'}
+            </button>
+        </div>`).join('');
+
+    box.querySelectorAll('.add-btn').forEach((btn) => {
+        btn.onclick = () => addPerson(Number(btn.dataset.uid), btn);
+    });
+}
+
+async function addPerson(userId, button) {
+    const user = searchCache.find((u) => u.id === userId);
+    if (!user) return;
+
+    button.disabled = true;
+    button.textContent = user.is_contact ? 'Opening…' : 'Adding…';
+
+    try {
+        await api('/api/contacts', { method: 'POST', body: { userId } });
+        await loadContacts();
+        closeSheets();
+        const contact = state.contacts.find((c) => c.contact_id === userId);
+        if (contact) openChat(contact);
+    } catch (err) {
+        toast(err.message, 'err');
+        button.disabled = false;
+        button.textContent = user.is_contact ? 'Message' : 'Add';
+    }
+}
+
+// ------------------------------------------------------------ sheets ---
+
+function openSheet(id) {
+    $('scrim').hidden = false;
+    $(id).hidden = false;
+}
+
+function closeSheets() {
+    $('scrim').hidden = true;
+    $('newChatSheet').hidden = true;
+    $('profileSheet').hidden = true;
+}
+
+// ------------------------------------------------------------ emoji ----
+
+const EMOJI = {
+    '😀': '😀 😃 😄 😁 😆 😅 🤣 😂 🙂 🙃 😉 😊 😇 🥰 😍 🤩 😘 😗 😚 😙 😋 😛 😜 🤪 😝 🤗 🤭 🤔 🤐 😐 😑 😶 😏 😒 🙄 😬 😌 😔 😪 😴 😷 🤒 🤕 🤢 🥳 😎 🤓 🧐 😕 😟 🙁 😮 😯 😲 😳 🥺 😦 😧 😨 😰 😥 😢 😭 😱 😖 😣 😞 😓 😩 😫 🥱 😤 😡 😠 🤬 😈 💀 💩 🤡 👻 👽 🤖',
+    '👍': '👍 👎 👌 🤌 🤏 ✌️ 🤞 🤟 🤘 🤙 👈 👉 👆 👇 ☝️ ✋ 🤚 🖐️ 🖖 👋 🤝 🙏 ✍️ 💪 🦾 👏 🙌 👐 🤲 🫶 🤳 💅',
+    '❤️': '❤️ 🧡 💛 💚 💙 💜 🖤 🤍 🤎 💔 ❣️ 💕 💞 💓 💗 💖 💘 💝 💟 ✨ ⭐ 🌟 💫 ⚡ 🔥 💥 💯 🎉 🎊 🎈 🎁 🏆 🥇 🎯',
+    '🐶': '🐶 🐱 🐭 🐹 🐰 🦊 🐻 🐼 🐨 🐯 🦁 🐮 🐷 🐸 🐵 🙈 🙉 🙊 🐒 🦄 🐝 🦋 🐞 🐢 🐍 🐙 🦐 🐠 🐟 🐬 🐳 🦈 🐘 🦒 🌵 🌲 🌴 🌱 🍀 🌺 🌸 🌼 🌻 🌙 🌈 ☀️ ⛅ ☁️ ❄️ ⛄ 💧 🌊',
+    '🍔': '🍏 🍎 🍐 🍊 🍋 🍌 🍉 🍇 🍓 🫐 🍒 🍑 🥭 🍍 🥥 🥝 🍅 🥑 🌽 🥕 🥔 🍞 🧀 🥚 🍳 🥞 🥓 🍔 🍟 🍕 🌭 🥪 🌮 🌯 🥗 🍝 🍜 🍲 🍛 🍣 🍱 🍤 🍚 🍦 🍰 🎂 🍫 🍬 🍭 🍩 🍪 ☕ 🍵 🥤 🍺 🍻 🥂 🍷',
+    '⚽': '⚽ 🏀 🏈 ⚾ 🎾 🏐 🏉 🎱 🏓 🏸 🥅 ⛳ 🏹 🎣 🥊 🥋 🛹 ⛸️ 🎿 🏂 🏋️ 🤸 🚴 🚵 🧗 🎪 🎭 🎨 🎬 🎤 🎧 🎼 🎹 🥁 🎷 🎺 🎸 🎻 🎲 🎮 🎰 🧩',
+    '🚗': '🚗 🚕 🚙 🚌 🏎️ 🚓 🚑 🚒 🚚 🚜 🛴 🚲 🛵 🏍️ 🚂 🚄 🚈 🚊 ✈️ 🛫 🛬 🚀 🛸 🚁 ⛵ 🚤 🛳️ ⚓ 🗺️ 🗽 🗼 🏰 🎡 🎢 ⛲ 🏖️ 🏝️ 🌋 ⛰️ 🏕️ ⛺ 🏠 🏢 🏬 🏥 🏫 ⛪ 🕌',
+    '💻': '⌚ 📱 💻 ⌨️ 🖥️ 🖨️ 🖱️ 💾 💿 📷 📹 🎥 📞 ☎️ 📺 📻 ⏰ ⏳ 🔋 🔌 💡 🔦 💰 💳 💎 ⚖️ 🔧 🔨 🛠️ ⚙️ 🧲 💣 🔪 🔮 💊 💉 🩺 🧹 🔑 🚪 🛏️ 🧸 🖼️ 🛍️ 📦 📜 📄 📊 📈 📉 📅 📋 📁 📰 📚 📖 🔖 🔗 📎 📐 📌 ✂️ 🖊️ 📝 ✏️ 🔍 🔒 🔓',
+    '✅': '✅ ❌ ⭕ 🛑 ⛔ 🚫 ❗ ❓ ⚠️ 🔞 ♻️ 🔱 ⚜️ 🌐 ♿ 🚻 🅿️ 🆗 🆕 🆓 🔟 #️⃣ 0️⃣ 1️⃣ 2️⃣ 3️⃣ 4️⃣ 5️⃣ 6️⃣ 7️⃣ 8️⃣ 9️⃣ ▶️ ⏸️ ⏹️ ⏭️ 🔀 🔁 🔊 🔇 📶 ➕ ➖ ✖️ ➗ ♾️'
+};
+
+let emojiBuilt = false;
+
+function buildEmoji() {
+    if (emojiBuilt) return;
+    const tabs = $('emojiTabs');
+    const grid = $('emojiGrid');
+    const keys = Object.keys(EMOJI);
+
+    const paint = (key) => {
+        grid.innerHTML = EMOJI[key].split(' ').filter(Boolean)
+            .map((e) => `<button type="button">${e}</button>`).join('');
+        grid.querySelectorAll('button').forEach((b) => {
+            b.onclick = () => insertEmoji(b.textContent);
+        });
+    };
+
+    tabs.innerHTML = keys.map((k, i) =>
+        `<button type="button" class="${i === 0 ? 'is-active' : ''}">${k}</button>`).join('');
+
+    tabs.querySelectorAll('button').forEach((btn, i) => {
+        btn.onclick = () => {
+            tabs.querySelectorAll('button').forEach((b) => b.classList.remove('is-active'));
+            btn.classList.add('is-active');
+            paint(keys[i]);
+        };
+    });
+
+    paint(keys[0]);
+    emojiBuilt = true;
+}
+
+function insertEmoji(emoji) {
+    const input = $('msgInput');
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? input.value.length;
+    input.value = input.value.slice(0, start) + emoji + input.value.slice(end);
+    input.focus();
+    input.setSelectionRange(start + emoji.length, start + emoji.length);
+    autoGrow();
+}
+
+// ------------------------------------------------------ voice notes ----
+
+let recorder = null, chunks = [], recTimer = null, recSecs = 0, recAborted = false;
 
 async function startRecording() {
-    if (!currentContact) { showToast('Open a chat first', 'warning'); return; }
-    if (mediaRecorder) return;
+    if (recorder || !state.peer) {
+        if (!state.peer) toast('Open a chat first', 'warn');
+        return;
+    }
+    if (!navigator.mediaDevices || !window.MediaRecorder) {
+        toast('Recording needs a secure (https) connection', 'err');
+        return;
+    }
+
     try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        recordedChunks = []; recCancelled = false; recSeconds = 0;
-        mediaRecorder = new MediaRecorder(stream);
-        mediaRecorder.ondataavailable = e => { if (e.data.size) recordedChunks.push(e.data); };
-        mediaRecorder.onstop = () => {
-            stream.getTracks().forEach(t => t.stop());
-            document.getElementById('recordingBar').classList.remove('active');
+        chunks = []; recAborted = false; recSecs = 0;
+        recorder = new MediaRecorder(stream);
+
+        recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+        recorder.onstop = () => {
+            stream.getTracks().forEach((t) => t.stop());
             clearInterval(recTimer);
-            const blob = new Blob(recordedChunks, { type: 'audio/webm' });
-            mediaRecorder = null;
-            if (!recCancelled && blob.size > 800) {
-                uploadAndSend(new File([blob], `voice-${Date.now()}.webm`, { type: 'audio/webm' }), 'audio');
+            $('recorder').hidden = true;
+            $('composer').hidden = false;
+            $('micBtn').classList.remove('is-rec');
+            const blob = new Blob(chunks, { type: 'audio/webm' });
+            recorder = null;
+            if (!recAborted && blob.size > 1000) {
+                sendFile(new File([blob], `voice-${Date.now()}.webm`, { type: 'audio/webm' }), 'audio');
             }
         };
-        mediaRecorder.start();
-        document.getElementById('recordingBar').classList.add('active');
+
+        recorder.start();
+        $('recorder').hidden = false;
+        $('composer').hidden = true;
+        $('micBtn').classList.add('is-rec');
         recTimer = setInterval(() => {
-            recSeconds++;
-            const m = Math.floor(recSeconds / 60), sec = String(recSeconds % 60).padStart(2, '0');
-            document.getElementById('recTime').textContent = `${m}:${sec}`;
+            recSecs++;
+            $('recTime').textContent = `${Math.floor(recSecs / 60)}:${String(recSecs % 60).padStart(2, '0')}`;
         }, 1000);
-    } catch (e) {
-        showToast('Microphone permission denied', 'error');
+    } catch {
+        toast('Microphone permission denied', 'err');
     }
 }
 
 function stopRecording(send) {
-    if (!mediaRecorder) return;
-    recCancelled = !send;
-    mediaRecorder.stop();
+    if (!recorder) return;
+    recAborted = !send;
+    recorder.stop();
 }
 
-function cancelRecording() { stopRecording(false); }
+// ------------------------------------------------------------ calls ----
 
-// ==================== VOICE / VIDEO CALLS (WebRTC) ====================
-const ICE_CONFIG = { iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }] };
-let peer = null, localStream = null, callPeerId = null, pendingOffer = null, currentCallType = 'audio';
+const RTC_CONFIG = {
+    iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }]
+};
 
-function showCallUI(name, avatar, status, video) {
-    document.getElementById('callName').textContent = name;
-    document.getElementById('callStatus').textContent = status;
-    document.getElementById('callAvatar').src = avatar ||
-        `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=667eea&color=fff`;
-    document.getElementById('callOverlay').classList.add('active');
-    document.getElementById('callOverlay').classList.toggle('video-mode', !!video);
-    document.getElementById('btnCam').style.display = video ? '' : 'none';
+const call = { pc: null, stream: null, peerId: null, offer: null, media: 'audio' };
+
+function callUI(name, avatar, status, video) {
+    $('callName').textContent = name;
+    $('callStatus').textContent = status;
+    $('callAvatar').src = avatarFor(name, avatar);
+    $('callScreen').hidden = false;
+    $('callScreen').classList.toggle('video', !!video);
+    $('camBtn').style.display = video ? '' : 'none';
 }
 
-function closeCallUI() {
-    document.getElementById('callOverlay').classList.remove('active');
-    document.getElementById('incomingCall').classList.remove('active');
-}
-
-async function buildPeer(toUserId) {
-    const pc = new RTCPeerConnection(ICE_CONFIG);
-    pc.onicecandidate = e => {
-        if (e.candidate && socket) socket.emit('iceCandidate', { toUserId, candidate: e.candidate });
+function newPeerConnection(toUserId) {
+    const pc = new RTCPeerConnection(RTC_CONFIG);
+    pc.onicecandidate = (e) => {
+        if (e.candidate) state.socket.emit('call:ice', { toUserId, candidate: e.candidate });
     };
-    pc.ontrack = e => {
-        const remote = document.getElementById('remoteVideo');
-        if (remote.srcObject !== e.streams[0]) remote.srcObject = e.streams[0];
-        document.getElementById('callStatus').textContent = 'Connected';
+    pc.ontrack = (e) => {
+        $('remoteVideo').srcObject = e.streams[0];
+        $('callStatus').textContent = 'Connected';
     };
     pc.onconnectionstatechange = () => {
-        if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) hangUp(true);
+        if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) endCall(true);
     };
     return pc;
 }
 
-async function makeCall(type) {
-    if (!currentContact) { showToast('Open a chat first', 'warning'); return; }
-    if (!navigator.mediaDevices) { showToast('Calls need a secure (https) connection', 'error'); return; }
-
-    currentCallType = type === 'video' ? 'video' : 'audio';
-    callPeerId = currentContact.contact_id;
-    const name = currentContact.contact_name || currentContact.user_name;
-
-    try {
-        localStream = await navigator.mediaDevices.getUserMedia({
-            audio: true,
-            video: currentCallType === 'video'
-        });
-    } catch (e) {
-        showToast('Camera/microphone permission denied', 'error');
+async function startCall(media) {
+    if (!state.peer) return;
+    if (!navigator.mediaDevices) {
+        toast('Calls need a secure (https) connection', 'err');
         return;
     }
 
-    showCallUI(name, currentContact.avatar, 'Ringing...', currentCallType === 'video');
-    document.getElementById('localVideo').srcObject = localStream;
+    call.media = media;
+    call.peerId = state.peer.contact_id;
 
-    peer = await buildPeer(callPeerId);
-    localStream.getTracks().forEach(t => peer.addTrack(t, localStream));
+    try {
+        call.stream = await navigator.mediaDevices.getUserMedia({
+            audio: true, video: media === 'video'
+        });
+    } catch {
+        toast('Camera/microphone permission denied', 'err');
+        return;
+    }
 
-    const offer = await peer.createOffer();
-    await peer.setLocalDescription(offer);
-    socket.emit('callUser', { toUserId: callPeerId, offer, callType: currentCallType });
+    callUI(state.peer.name, state.peer.avatar, 'Ringing…', media === 'video');
+    $('localVideo').srcObject = call.stream;
+
+    call.pc = newPeerConnection(call.peerId);
+    call.stream.getTracks().forEach((t) => call.pc.addTrack(t, call.stream));
+
+    const offer = await call.pc.createOffer();
+    await call.pc.setLocalDescription(offer);
+    state.socket.emit('call:offer', { toUserId: call.peerId, offer, media });
 }
 
 async function acceptCall() {
-    document.getElementById('incomingCall').classList.remove('active');
-    if (!pendingOffer) return;
+    $('ringBanner').hidden = true;
+    if (!call.offer) return;
 
     try {
-        localStream = await navigator.mediaDevices.getUserMedia({
-            audio: true,
-            video: currentCallType === 'video'
+        call.stream = await navigator.mediaDevices.getUserMedia({
+            audio: true, video: call.media === 'video'
         });
-    } catch (e) {
-        showToast('Permission denied', 'error');
-        socket.emit('rejectCall', { toUserId: callPeerId });
+    } catch {
+        state.socket.emit('call:decline', { toUserId: call.peerId });
+        toast('Permission denied', 'err');
         return;
     }
 
-    const contact = contacts.find(c => c.contact_id === callPeerId);
-    const name = contact ? (contact.contact_name || contact.user_name) : 'Caller';
-    showCallUI(name, contact && contact.avatar, 'Connecting...', currentCallType === 'video');
-    document.getElementById('localVideo').srcObject = localStream;
+    const c = state.contacts.find((x) => x.contact_id === call.peerId);
+    callUI(c ? c.name : 'Caller', c && c.avatar, 'Connecting…', call.media === 'video');
+    $('localVideo').srcObject = call.stream;
 
-    peer = await buildPeer(callPeerId);
-    localStream.getTracks().forEach(t => peer.addTrack(t, localStream));
-    await peer.setRemoteDescription(new RTCSessionDescription(pendingOffer));
-    const answer = await peer.createAnswer();
-    await peer.setLocalDescription(answer);
-    socket.emit('answerCall', { toUserId: callPeerId, answer });
-    pendingOffer = null;
+    call.pc = newPeerConnection(call.peerId);
+    call.stream.getTracks().forEach((t) => call.pc.addTrack(t, call.stream));
+    await call.pc.setRemoteDescription(new RTCSessionDescription(call.offer));
+    const answer = await call.pc.createAnswer();
+    await call.pc.setLocalDescription(answer);
+    state.socket.emit('call:answer', { toUserId: call.peerId, answer });
+    call.offer = null;
 }
 
 function declineCall() {
-    document.getElementById('incomingCall').classList.remove('active');
-    if (callPeerId && socket) socket.emit('rejectCall', { toUserId: callPeerId });
-    pendingOffer = null; callPeerId = null;
+    $('ringBanner').hidden = true;
+    if (call.peerId) state.socket.emit('call:decline', { toUserId: call.peerId });
+    call.offer = null; call.peerId = null;
 }
 
-function hangUp(silent) {
-    if (!silent && callPeerId && socket) socket.emit('endCall', { toUserId: callPeerId });
-    if (peer) { try { peer.close(); } catch (e) {} peer = null; }
-    if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
-    document.getElementById('remoteVideo').srcObject = null;
-    document.getElementById('localVideo').srcObject = null;
-    closeCallUI();
-    callPeerId = null; pendingOffer = null;
-}
-
-function toggleMute() {
-    if (!localStream) return;
-    const track = localStream.getAudioTracks()[0];
-    if (!track) return;
-    track.enabled = !track.enabled;
-    document.getElementById('btnMute').classList.toggle('off', !track.enabled);
-}
-
-function toggleCam() {
-    if (!localStream) return;
-    const track = localStream.getVideoTracks()[0];
-    if (!track) return;
-    track.enabled = !track.enabled;
-    document.getElementById('btnCam').classList.toggle('off', !track.enabled);
-}
-
-
-// ==================== ERROR HANDLING ====================
-window.addEventListener('error', (e) => {
-    // Ignore failed images/assets (e.g. offline avatar CDN) -- those must not
-    // pop a scary full-page error toast.
-    if (e.target && e.target !== window) return;
-    console.error('Global error:', e.error || e.message);
-});
-
-window.addEventListener('unhandledrejection', (e) => {
-    // Only claim a network problem when the browser is actually offline --
-    // otherwise this masks real application errors behind a wrong message.
-    console.error('Unhandled promise rejection:', e.reason || e);
-    if (!navigator.onLine) {
-        showToast('You appear to be offline. Check your connection.', 'error');
+function endCall(silent) {
+    if (!silent && call.peerId && state.socket) {
+        state.socket.emit('call:end', { toUserId: call.peerId });
     }
-});
+    if (call.pc) { try { call.pc.close(); } catch {} }
+    if (call.stream) call.stream.getTracks().forEach((t) => t.stop());
+    call.pc = null; call.stream = null; call.peerId = null; call.offer = null;
+    $('remoteVideo').srcObject = null;
+    $('localVideo').srcObject = null;
+    $('callScreen').hidden = true;
+    $('ringBanner').hidden = true;
+}
 
-// ==================== PAGE VISIBILITY ====================
-document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-        // Page is hidden
-        if (socket && currentUser) {
-            socket.emit('away', currentUser.id);
+function bindCallSignals(socket) {
+    socket.on('call:incoming', ({ from, offer, media }) => {
+        if (call.pc) { socket.emit('call:decline', { toUserId: from }); return; }
+        call.peerId = from; call.offer = offer; call.media = media;
+        const c = state.contacts.find((x) => x.contact_id === from);
+        $('ringName').textContent = c ? c.name : 'Unknown caller';
+        $('ringKind').textContent = media === 'video' ? 'Incoming video call' : 'Incoming voice call';
+        $('ringAvatar').src = avatarFor(c ? c.name : '?', c && c.avatar);
+        $('ringBanner').hidden = false;
+    });
+
+    socket.on('call:answered', async ({ answer }) => {
+        if (call.pc) {
+            await call.pc.setRemoteDescription(new RTCSessionDescription(answer));
+            $('callStatus').textContent = 'Connected';
         }
-    } else {
-        // Page is visible
-        if (socket && currentUser) {
-            socket.emit('online', currentUser.id);
+    });
+
+    socket.on('call:ice', async ({ candidate }) => {
+        if (call.pc && candidate) {
+            try { await call.pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch {}
         }
-    }
+    });
+
+    socket.on('call:declined', () => { toast('Call declined', 'warn'); endCall(true); });
+    socket.on('call:ended', () => { toast('Call ended'); endCall(true); });
+}
+
+// ------------------------------------------------------------ input ----
+
+function autoGrow() {
+    const el = $('msgInput');
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 130) + 'px';
+}
+
+// ------------------------------------------------------------- wire ----
+
+function wire() {
+    // auth
+    $('tabSignin').onclick = () => switchTab('signin');
+    $('tabSignup').onclick = () => switchTab('signup');
+
+    $('signinForm').onsubmit = (e) => {
+        e.preventDefault();
+        authenticate('/api/auth/login',
+            { phone: $('siPhone').value, password: $('siPass').value }, $('siBtn'));
+    };
+
+    $('signupForm').onsubmit = (e) => {
+        e.preventDefault();
+        authenticate('/api/auth/register', {
+            name: $('suName').value,
+            phone: $('suPhone').value,
+            password: $('suPass').value
+        }, $('suBtn'));
+    };
+
+    $('logoutBtn').onclick = () => { if (confirm('Sign out of ChatConnect?')) signOut(); };
+
+    // navigation
+    $('chatSearch').oninput = renderChatList;
+    $('newChatBtn').onclick = () => { openSheet('newChatSheet'); peopleIdle(); $('peopleSearch').value = ''; setTimeout(() => $('peopleSearch').focus(), 80); };
+    $('closeNewChat').onclick = closeSheets;
+    $('closeProfile').onclick = closeSheets;
+    $('scrim').onclick = closeSheets;
+    $('backBtn').onclick = closeChat;
+    $('openSidebarBtn').onclick = () => $('appScreen').classList.remove('viewing');
+
+    $('peopleSearch').oninput = (e) => runSearch(e.target.value);
+
+    // profile
+    $('meAvatarBtn').onclick = () => {
+        $('pfName').value = state.me.name;
+        $('pfAbout').value = state.me.about || '';
+        $('pfPhone').textContent = 'Phone: ' + state.me.phone;
+        openSheet('profileSheet');
+    };
+    $('saveProfile').onclick = async () => {
+        try {
+            state.me = await api('/api/me', {
+                method: 'PUT',
+                body: { name: $('pfName').value, about: $('pfAbout').value }
+            });
+            store.set('me', JSON.stringify(state.me));
+            paintMe();
+            closeSheets();
+            toast('Profile saved', 'ok');
+        } catch (err) { toast(err.message, 'err'); }
+    };
+
+    // composer
+    const input = $('msgInput');
+    input.addEventListener('input', () => { autoGrow(); onTyping(); });
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendText(); }
+        if (e.key === 'Escape') cancelEdit();
+    });
+    $('sendBtn').onclick = sendText;
+    $('cancelEditBtn').onclick = () => { cancelEdit(); input.value = ''; autoGrow(); };
+
+    // emoji + attach
+    $('emojiBtn').onclick = (e) => {
+        e.stopPropagation();
+        buildEmoji();
+        $('attachPop').hidden = true;
+        $('emojiPop').hidden = !$('emojiPop').hidden;
+    };
+    $('attachBtn').onclick = (e) => {
+        e.stopPropagation();
+        $('emojiPop').hidden = true;
+        $('attachPop').hidden = !$('attachPop').hidden;
+    };
+    $('attachPop').querySelectorAll('button').forEach((b) => {
+        b.onclick = () => {
+            const f = $('fileInput');
+            f.accept = b.dataset.accept || '';
+            f.value = '';
+            f.click();
+            $('attachPop').hidden = true;
+        };
+    });
+    $('fileInput').onchange = (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (file) sendFile(file);
+    };
+
+    // voice notes — hold to record
+    const mic = $('micBtn');
+    mic.addEventListener('mousedown', startRecording);
+    mic.addEventListener('mouseup', () => stopRecording(true));
+    mic.addEventListener('mouseleave', () => { if (recorder) stopRecording(true); });
+    mic.addEventListener('touchstart', (e) => { e.preventDefault(); startRecording(); });
+    mic.addEventListener('touchend', (e) => { e.preventDefault(); stopRecording(true); });
+    $('recCancel').onclick = () => stopRecording(false);
+    $('recSend').onclick = () => stopRecording(true);
+
+    // calls
+    $('callAudioBtn').onclick = () => startCall('audio');
+    $('callVideoBtn').onclick = () => startCall('video');
+    $('hangBtn').onclick = () => endCall();
+    $('acceptBtn').onclick = acceptCall;
+    $('declineBtn').onclick = declineCall;
+    $('muteBtn').onclick = () => {
+        const t = call.stream && call.stream.getAudioTracks()[0];
+        if (!t) return;
+        t.enabled = !t.enabled;
+        $('muteBtn').classList.toggle('off', !t.enabled);
+    };
+    $('camBtn').onclick = () => {
+        const t = call.stream && call.stream.getVideoTracks()[0];
+        if (!t) return;
+        t.enabled = !t.enabled;
+        $('camBtn').classList.toggle('off', !t.enabled);
+    };
+
+    // clear chat
+    $('clearChatBtn').onclick = async () => {
+        if (!state.conversationId) return;
+        if (!confirm(`Clear all messages with ${state.peer.name}?`)) return;
+        try {
+            await api(`/api/conversations/${state.conversationId}`, { method: 'DELETE' });
+            renderMessages([]);
+            loadContacts();
+            toast('Chat cleared', 'ok');
+        } catch (err) { toast(err.message, 'err'); }
+    };
+
+    // message menu
+    $('msgMenu').querySelectorAll('button').forEach((btn) => {
+        btn.onclick = async () => {
+            const m = menuTarget;
+            closeMsgMenu();
+            if (!m) return;
+            const act = btn.dataset.act;
+
+            if (act === 'copy') {
+                try { await navigator.clipboard.writeText(m.body || ''); toast('Copied', 'ok'); }
+                catch { toast('Copy failed', 'err'); }
+            }
+            if (act === 'edit') startEdit(m);
+            if (act === 'delete') {
+                if (!confirm('Delete this message?')) return;
+                try { await api(`/api/messages/${m.id}`, { method: 'DELETE' }); }
+                catch (err) { toast(err.message, 'err'); }
+            }
+        };
+    });
+
+    // global dismissals
+    document.addEventListener('click', (e) => {
+        if (!e.target.closest('#emojiPop') && !e.target.closest('#emojiBtn')) $('emojiPop').hidden = true;
+        if (!e.target.closest('#attachPop') && !e.target.closest('#attachBtn')) $('attachPop').hidden = true;
+        if (!e.target.closest('#msgMenu')) closeMsgMenu();
+    });
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { closeSheets(); closeMsgMenu(); $('emojiPop').hidden = true; $('attachPop').hidden = true; }
+    });
+
+    window.addEventListener('beforeunload', stopTyping);
+}
+
+// ------------------------------------------------------------- init ----
+
+document.addEventListener('DOMContentLoaded', () => {
+    wire();
+    boot();
 });
 
-// ==================== CLEANUP ====================
-window.addEventListener('beforeunload', () => {
-    if (socket) {
-        socket.disconnect();
-    }
-});
+// Expose a few helpers for automated checks.
+window.__chat = { state, buildMessage, attachmentHtml, highlight, store };
+
+})();

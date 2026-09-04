@@ -1,734 +1,480 @@
+/**
+ * ChatConnect — real-time chat server.
+ *
+ * Express + Socket.IO + local SQLite. No third-party/cloud services.
+ */
 require('dotenv').config();
+
 const express = require('express');
 const http = require('http');
-const socketIo = require('socket.io');
 const path = require('path');
-const session = require('express-session');
+const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
-const rateLimit = require('express-rate-limit');
 const cors = require('cors');
-const db = require('./database');
+const { Server } = require('socket.io');
+
+const db = require('./db');
+
+const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-only-secret-change-me';
+const UPLOAD_DIR = path.join(__dirname, 'uploads');
+const PUBLIC_DIR = path.join(__dirname, 'public');
+
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server, {
-    cors: {
-        origin: "*",
-        methods: ["GET", "POST"]
-    }
-});
+const io = new Server(server, { cors: { origin: '*' }, maxHttpBufferSize: 1e7 });
 
-// Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
-// `index: false` so express.static doesn't serve index.html directly for '/'.
-// The GET '/' route below renders it with a cache-busting asset version.
-app.use(express.static(path.join(__dirname, 'public'), { index: false }));
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Session configuration
-app.use(session({
-    secret: process.env.SESSION_SECRET || 'secret-key',
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-        secure: process.env.NODE_ENV === 'production',
-        httpOnly: true,
-        maxAge: 24 * 60 * 60 * 1000 // 24 hours
-    }
-}));
+// ---------------------------------------------------------------- static ----
 
-// Rate limiting
-const authLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: process.env.NODE_ENV === 'production' ? 5 : 100,
-    message: 'Too many attempts, please try again later'
-});
+// `index: false` so the templated route below handles "/" (cache busting).
+app.use(express.static(PUBLIC_DIR, { index: false }));
+app.use('/uploads', express.static(UPLOAD_DIR, { maxAge: '7d' }));
 
-// File upload configuration
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, 'uploads/');
-    },
-    filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, uniqueSuffix + path.extname(file.originalname));
-    }
-});
-
-const upload = multer({
-    storage,
-    limits: { fileSize: 25 * 1024 * 1024 }, // 25MB (video / voice notes)
-    fileFilter: (req, file, cb) => {
-        const allowed = /jpeg|jpg|png|gif|webp|bmp|svg|pdf|docx?|xlsx?|pptx?|txt|csv|zip|rar|7z|mp4|webm|mov|avi|mkv|mp3|wav|ogg|oga|m4a|aac|opus|flac/;
-        const ext = allowed.test(path.extname(file.originalname).toLowerCase());
-        const mime = /^(image|video|audio)\//.test(file.mimetype) || allowed.test(file.mimetype);
-        if (ext || mime) return cb(null, true);
-        cb(new Error('Unsupported file type'));
-    }
-});
-
-// Helper function to verify JWT token
-const verifyToken = (req, res, next) => {
-    const token = req.headers['authorization']?.split(' ')[1] || req.session.token;
-    
-    if (!token) {
-        return res.status(401).json({ error: 'No token provided' });
-    }
-    
-    jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-        if (err) {
-            return res.status(403).json({ error: 'Invalid token' });
-        }
-        req.userId = decoded.id;
-        next();
-    });
-};
-
-// ===================== AUTHENTICATION ROUTES =====================
-
-// Register
-app.post('/api/auth/register', authLimiter, async (req, res) => {
-    const { phone, name, password } = req.body;
-    
-    try {
-        // Check if user exists
-        db.get('SELECT * FROM users WHERE phone = ?', [phone], async (err, user) => {
-            if (user) {
-                return res.status(400).json({ error: 'Phone number already registered' });
-            }
-            
-            // Hash password
-            const hashedPassword = await bcrypt.hash(password, 10);
-            
-            // Insert new user
-            db.run(
-                'INSERT INTO users (phone, name, password) VALUES (?, ?, ?)',
-                [phone, name, hashedPassword],
-                function(err) {
-                    if (err) {
-                        return res.status(500).json({ error: 'Registration failed' });
-                    }
-                    
-                    const userId = this.lastID;
-                    const token = jwt.sign(
-                        { id: userId, phone, name },
-                        process.env.JWT_SECRET,
-                        { expiresIn: '7d' }
-                    );
-                    
-                    req.session.token = token;
-                    req.session.userId = userId;
-                    
-                    res.json({
-                        success: true,
-                        token,
-                        user: { id: userId, phone, name }
-                    });
-                }
-            );
-        });
-    } catch (error) {
-        res.status(500).json({ error: 'Server error' });
-    }
-});
-
-// Login
-app.post('/api/auth/login', authLimiter, async (req, res) => {
-    const { phone, password } = req.body;
-    
-    db.get('SELECT * FROM users WHERE phone = ?', [phone], async (err, user) => {
-        if (err || !user) {
-            return res.status(401).json({ error: 'Invalid credentials' });
-        }
-        
-        const validPassword = await bcrypt.compare(password, user.password);
-        if (!validPassword) {
-            return res.status(401).json({ error: 'Invalid credentials' });
-        }
-        
-        const token = jwt.sign(
-            { id: user.id, phone: user.phone, name: user.name },
-            process.env.JWT_SECRET,
-            { expiresIn: '7d' }
-        );
-        
-        // Update online status
-        db.run('UPDATE users SET is_online = 1, last_seen = CURRENT_TIMESTAMP WHERE id = ?', [user.id]);
-        
-        req.session.token = token;
-        req.session.userId = user.id;
-        
-        res.json({
-            success: true,
-            token,
-            user: {
-                id: user.id,
-                phone: user.phone,
-                name: user.name,
-                avatar: user.avatar,
-                bio: user.bio
-            }
-        });
-    });
-});
-
-// Logout
-app.post('/api/auth/logout', verifyToken, (req, res) => {
-    db.run('UPDATE users SET is_online = 0, last_seen = CURRENT_TIMESTAMP WHERE id = ?', [req.userId]);
-    req.session.destroy();
-    res.json({ success: true });
-});
-
-// ===================== USER ROUTES =====================
-
-// Get user profile
-app.get('/api/user/profile', verifyToken, (req, res) => {
-    db.get(
-        'SELECT id, phone, name, avatar, bio, last_seen, is_online FROM users WHERE id = ?',
-        [req.userId],
-        (err, user) => {
-            if (err || !user) {
-                return res.status(404).json({ error: 'User not found' });
-            }
-            res.json(user);
-        }
-    );
-});
-
-// Update profile
-app.put('/api/user/profile', verifyToken, upload.single('avatar'), (req, res) => {
-    const { name, bio } = req.body;
-    const avatar = req.file ? `/uploads/${req.file.filename}` : null;
-    
-    let query = 'UPDATE users SET updated_at = CURRENT_TIMESTAMP';
-    const params = [];
-    
-    if (name) {
-        query += ', name = ?';
-        params.push(name);
-    }
-    if (bio) {
-        query += ', bio = ?';
-        params.push(bio);
-    }
-    if (avatar) {
-        query += ', avatar = ?';
-        params.push(avatar);
-    }
-    
-    query += ' WHERE id = ?';
-    params.push(req.userId);
-    
-    db.run(query, params, (err) => {
-        if (err) {
-            return res.status(500).json({ error: 'Failed to update profile' });
-        }
-        res.json({ success: true });
-    });
-});
-
-// ===================== CONTACT ROUTES =====================
-
-// Add contact
-// Search registered users by name or phone (excludes self)
-app.get('/api/users/search', verifyToken, (req, res) => {
-    const q = (req.query.q || '').trim();
-    if (q.length < 2) return res.json([]);
-    const like = `%${q}%`;
-    db.all(
-        `SELECT u.id, u.name, u.phone, u.avatar, u.bio, u.is_online,
-                EXISTS(SELECT 1 FROM contacts c WHERE c.user_id = ? AND c.contact_id = u.id) AS is_contact
-         FROM users u
-         WHERE u.id != ? AND (u.name LIKE ? OR u.phone LIKE ?)
-         ORDER BY u.name LIMIT 20`,
-        [req.userId, req.userId, like, like],
-        (err, rows) => {
-            if (err) return res.status(500).json({ error: 'Search failed' });
-            res.json(rows || []);
-        }
-    );
-});
-
-app.post('/api/contacts/add', verifyToken, (req, res) => {
-    const { phone, name } = req.body;
-    
-    // Find user by phone
-    db.get('SELECT id, name, avatar FROM users WHERE phone = ?', [phone], (err, contactUser) => {
-        if (err || !contactUser) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-        
-        if (contactUser.id === req.userId) {
-            return res.status(400).json({ error: 'Cannot add yourself as contact' });
-        }
-        
-        // Add contact
-        db.run(
-            'INSERT OR REPLACE INTO contacts (user_id, contact_id, name) VALUES (?, ?, ?)',
-            [req.userId, contactUser.id, name || contactUser.name],
-            (err) => {
-                if (err) {
-                    return res.status(500).json({ error: 'Failed to add contact' });
-                }
-                
-                // Create or get conversation
-                const user1_id = Math.min(req.userId, contactUser.id);
-                const user2_id = Math.max(req.userId, contactUser.id);
-                
-                db.run(
-                    'INSERT OR IGNORE INTO conversations (user1_id, user2_id) VALUES (?, ?)',
-                    [user1_id, user2_id],
-                    (err) => {
-                        if (err) {
-                            return res.status(500).json({ error: 'Failed to create conversation' });
-                        }
-                        res.json({ success: true, contact: contactUser });
-                    }
-                );
-            }
-        );
-    });
-});
-
-// Get contacts
-app.get('/api/contacts', verifyToken, (req, res) => {
-    db.all(
-        `SELECT 
-            c.id,
-            c.contact_id,
-            c.name as contact_name,
-            c.is_blocked,
-            u.phone,
-            u.name as user_name,
-            u.avatar,
-            u.bio,
-            u.is_online,
-            u.last_seen,
-            conv.id as conversation_id,
-            m.message as last_message,
-            m.created_at as last_message_time,
-            (SELECT COUNT(*) FROM messages 
-             WHERE conversation_id = conv.id 
-             AND sender_id = c.contact_id 
-             AND is_read = 0) as unread_count
-         FROM contacts c
-         INNER JOIN users u ON c.contact_id = u.id
-         LEFT JOIN conversations conv ON 
-            (conv.user1_id = c.user_id AND conv.user2_id = c.contact_id) OR
-            (conv.user1_id = c.contact_id AND conv.user2_id = c.user_id)
-         LEFT JOIN messages m ON m.id = conv.last_message_id
-         WHERE c.user_id = ?
-         ORDER BY COALESCE(m.created_at, c.created_at) DESC`,
-        [req.userId],
-        (err, contacts) => {
-            if (err) {
-                return res.status(500).json({ error: 'Failed to fetch contacts' });
-            }
-            res.json(contacts);
-        }
-    );
-});
-
-// Block/Unblock contact
-app.put('/api/contacts/:contactId/block', verifyToken, (req, res) => {
-    const { contactId } = req.params;
-    const { block } = req.body;
-    
-    db.run(
-        'UPDATE contacts SET is_blocked = ? WHERE user_id = ? AND contact_id = ?',
-        [block ? 1 : 0, req.userId, contactId],
-        (err) => {
-            if (err) {
-                return res.status(500).json({ error: 'Failed to update contact' });
-            }
-            res.json({ success: true });
-        }
-    );
-});
-
-// ===================== MESSAGE ROUTES =====================
-
-// Get messages for a conversation
-app.get('/api/messages/:conversationId', verifyToken, (req, res) => {
-    const { conversationId } = req.params;
-    const { limit = 50, offset = 0 } = req.query;
-    
-    db.all(
-        `SELECT 
-            m.*,
-            u.name as sender_name,
-            u.avatar as sender_avatar
-         FROM messages m
-         INNER JOIN users u ON m.sender_id = u.id
-         WHERE m.conversation_id = ? 
-         AND m.is_deleted = 0
-         ORDER BY m.created_at DESC
-         LIMIT ? OFFSET ?`,
-        [conversationId, limit, offset],
-        (err, messages) => {
-            if (err) {
-                return res.status(500).json({ error: 'Failed to fetch messages' });
-            }
-            
-            // Mark messages as read
-            db.run(
-                'UPDATE messages SET is_read = 1, read_at = CURRENT_TIMESTAMP WHERE conversation_id = ? AND receiver_id = ? AND is_read = 0',
-                [conversationId, req.userId]
-            );
-            
-            res.json(messages.reverse());
-        }
-    );
-});
-
-// Send message
-app.post('/api/messages/send', verifyToken, (req, res) => {
-    const { receiverId, message, type = 'text', fileUrl = null } = req.body;
-    
-    // Get or create conversation
-    const user1_id = Math.min(req.userId, receiverId);
-    const user2_id = Math.max(req.userId, receiverId);
-    
-    db.get(
-        'SELECT id FROM conversations WHERE user1_id = ? AND user2_id = ?',
-        [user1_id, user2_id],
-        (err, conversation) => {
-            if (err) {
-                return res.status(500).json({ error: 'Failed to get conversation' });
-            }
-            
-            const conversationId = conversation ? conversation.id : null;
-            
-            const insertMessage = (convId) => {
-                db.run(
-                    'INSERT INTO messages (conversation_id, sender_id, receiver_id, message, type, file_url) VALUES (?, ?, ?, ?, ?, ?)',
-                    [convId, req.userId, receiverId, message, type, fileUrl],
-                    function(err) {
-                        if (err) {
-                            return res.status(500).json({ error: 'Failed to send message' });
-                        }
-                        
-                        const messageId = this.lastID;
-                        
-                        // Update conversation
-                        db.run(
-                            'UPDATE conversations SET last_message_id = ?, last_message_time = CURRENT_TIMESTAMP WHERE id = ?',
-                            [messageId, convId]
-                        );
-                        
-                        // Get the message to return
-                        db.get(
-                            `SELECT m.*, u.name as sender_name, u.avatar as sender_avatar
-                             FROM messages m
-                             INNER JOIN users u ON m.sender_id = u.id
-                             WHERE m.id = ?`,
-                            [messageId],
-                            (err, newMessage) => {
-                                if (err) {
-                                    return res.status(500).json({ error: 'Message sent but failed to retrieve' });
-                                }
-                                
-                                // Emit to receiver via Socket.IO
-                                io.to(`user_${receiverId}`).emit('newMessage', {
-                                    ...newMessage,
-                                    conversationId: convId
-                                });
-                                
-                                res.json({ ...newMessage, conversationId: convId });
-                            }
-                        );
-                    }
-                );
-            };
-            
-            if (conversationId) {
-                insertMessage(conversationId);
-            } else {
-                // Create conversation first
-                db.run(
-                    'INSERT INTO conversations (user1_id, user2_id) VALUES (?, ?)',
-                    [user1_id, user2_id],
-                    function(err) {
-                        if (err) {
-                            return res.status(500).json({ error: 'Failed to create conversation' });
-                        }
-                        insertMessage(this.lastID);
-                    }
-                );
-            }
-        }
-    );
-});
-
-// Edit message
-app.put('/api/messages/:messageId', verifyToken, (req, res) => {
-    const { messageId } = req.params;
-    const { message } = req.body;
-    
-    db.get(
-        'SELECT * FROM messages WHERE id = ? AND sender_id = ?',
-        [messageId, req.userId],
-        (err, msg) => {
-            if (err || !msg) {
-                return res.status(404).json({ error: 'Message not found or unauthorized' });
-            }
-            
-            db.run(
-                'UPDATE messages SET message = ?, is_edited = 1, edited_at = CURRENT_TIMESTAMP WHERE id = ?',
-                [message, messageId],
-                (err) => {
-                    if (err) {
-                        return res.status(500).json({ error: 'Failed to edit message' });
-                    }
-                    
-                    // Notify receiver
-                    io.to(`user_${msg.receiver_id}`).emit('messageEdited', {
-                        messageId,
-                        message,
-                        conversationId: msg.conversation_id
-                    });
-                    
-                    res.json({ success: true });
-                }
-            );
-        }
-    );
-});
-
-// Delete message
-app.delete('/api/messages/:messageId', verifyToken, (req, res) => {
-    const { messageId } = req.params;
-    
-    db.get(
-        'SELECT * FROM messages WHERE id = ?',
-        [messageId],
-        (err, msg) => {
-            if (err || !msg) {
-                return res.status(404).json({ error: 'Message not found' });
-            }
-            
-            if (msg.sender_id !== req.userId && msg.receiver_id !== req.userId) {
-                return res.status(403).json({ error: 'Unauthorized' });
-            }
-            
-            db.run(
-                'UPDATE messages SET is_deleted = 1, deleted_at = CURRENT_TIMESTAMP WHERE id = ?',
-                [messageId],
-                (err) => {
-                    if (err) {
-                        return res.status(500).json({ error: 'Failed to delete message' });
-                    }
-                    
-                    // Notify both users
-                    io.to(`user_${msg.sender_id}`).emit('messageDeleted', {
-                        messageId,
-                        conversationId: msg.conversation_id
-                    });
-                    io.to(`user_${msg.receiver_id}`).emit('messageDeleted', {
-                        messageId,
-                        conversationId: msg.conversation_id
-                    });
-                    
-                    res.json({ success: true });
-                }
-            );
-        }
-    );
-});
-
-// Delete entire chat
-app.delete('/api/conversations/:conversationId', verifyToken, (req, res) => {
-    const { conversationId } = req.params;
-    
-    db.get(
-        'SELECT * FROM conversations WHERE id = ?',
-        [conversationId],
-        (err, conversation) => {
-            if (err || !conversation) {
-                return res.status(404).json({ error: 'Conversation not found' });
-            }
-            
-            if (conversation.user1_id !== req.userId && conversation.user2_id !== req.userId) {
-                return res.status(403).json({ error: 'Unauthorized' });
-            }
-            
-            // Mark conversation as deleted for this user
-            const column = conversation.user1_id === req.userId ? 'user1_deleted' : 'user2_deleted';
-            db.run(
-                `UPDATE conversations SET ${column} = 1 WHERE id = ?`,
-                [conversationId],
-                (err) => {
-                    if (err) {
-                        return res.status(500).json({ error: 'Failed to delete conversation' });
-                    }
-                    res.json({ success: true });
-                }
-            );
-        }
-    );
-});
-
-// ===================== FILE UPLOAD =====================
-
-app.post('/api/upload', verifyToken, (req, res) => {
-    upload.single('file')(req, res, (err) => {
-        if (err) {
-            const msg = err.code === 'LIMIT_FILE_SIZE'
-                ? 'File is too large (max 25MB)'
-                : (err.message || 'Upload failed');
-            return res.status(400).json({ error: msg });
-        }
-        if (!req.file) {
-            return res.status(400).json({ error: 'No file uploaded' });
-        }
-    
-        res.json({
-            filename: req.file.filename,
-            originalName: req.file.originalname,
-            size: req.file.size,
-            mimetype: req.file.mimetype,
-            url: `/uploads/${req.file.filename}`
-        });
-    });
-});
-
-// ===================== SOCKET.IO =====================
-
-const activeUsers = new Map();
-
-io.on('connection', (socket) => {
-    console.log('New client connected:', socket.id);
-    
-    socket.on('authenticate', (userId) => {
-        socket.userId = userId;
-        socket.join(`user_${userId}`);
-        activeUsers.set(userId, socket.id);
-        
-        // Update online status
-        db.run('UPDATE users SET is_online = 1 WHERE id = ?', [userId]);
-        
-        // Notify contacts
-        db.all(
-            'SELECT user_id FROM contacts WHERE contact_id = ?',
-            [userId],
-            (err, contacts) => {
-                if (!err && contacts) {
-                    contacts.forEach(contact => {
-                        io.to(`user_${contact.user_id}`).emit('userOnline', userId);
-                    });
-                }
-            }
-        );
-    });
-    
-    socket.on('typing', ({ conversationId, receiverId }) => {
-        io.to(`user_${receiverId}`).emit('typing', {
-            conversationId,
-            userId: socket.userId
-        });
-    });
-    
-    socket.on('stopTyping', ({ conversationId, receiverId }) => {
-        io.to(`user_${receiverId}`).emit('stopTyping', {
-            conversationId,
-            userId: socket.userId
-        });
-    });
-    
-    socket.on('markAsRead', ({ messageId, senderId }) => {
-        db.run(
-            'UPDATE messages SET is_read = 1, read_at = CURRENT_TIMESTAMP WHERE id = ?',
-            [messageId],
-            (err) => {
-                if (!err) {
-                    io.to(`user_${senderId}`).emit('messageRead', { messageId });
-                }
-            }
-        );
-    });
-    
-    // ---------- WebRTC call signalling (peer-to-peer; server only relays) ----------
-    socket.on('callUser', ({ toUserId, offer, callType }) => {
-        io.to(`user_${toUserId}`).emit('incomingCall', {
-            from: socket.userId,
-            offer,
-            callType
-        });
-    });
-
-    socket.on('answerCall', ({ toUserId, answer }) => {
-        io.to(`user_${toUserId}`).emit('callAnswered', { from: socket.userId, answer });
-    });
-
-    socket.on('iceCandidate', ({ toUserId, candidate }) => {
-        io.to(`user_${toUserId}`).emit('iceCandidate', { from: socket.userId, candidate });
-    });
-
-    socket.on('rejectCall', ({ toUserId }) => {
-        io.to(`user_${toUserId}`).emit('callRejected', { from: socket.userId });
-    });
-
-    socket.on('endCall', ({ toUserId }) => {
-        io.to(`user_${toUserId}`).emit('callEnded', { from: socket.userId });
-    });
-
-    socket.on('disconnect', () => {
-        if (socket.userId) {
-            activeUsers.delete(socket.userId);
-            
-            // Update offline status
-            db.run(
-                'UPDATE users SET is_online = 0, last_seen = CURRENT_TIMESTAMP WHERE id = ?',
-                [socket.userId]
-            );
-            
-            // Notify contacts
-            db.all(
-                'SELECT user_id FROM contacts WHERE contact_id = ?',
-                [socket.userId],
-                (err, contacts) => {
-                    if (!err && contacts) {
-                        contacts.forEach(contact => {
-                            io.to(`user_${contact.user_id}`).emit('userOffline', socket.userId);
-                        });
-                    }
-                }
-            );
-        }
-        console.log('Client disconnected:', socket.id);
-    });
-});
-
-// Serve the chat UI.
-// index.html is rendered with an asset version stamp derived from the CSS/JS
-// mtimes, so browsers always pick up fresh styles/scripts after an edit
-// instead of silently reusing a cached copy.
-const fs = require('fs');
-
+// Asset version = newest mtime of css/js, so browsers can never serve a stale
+// bundle after an edit.
 function assetVersion() {
     try {
-        const css = fs.statSync(path.join(__dirname, 'public', 'css', 'styles.css')).mtimeMs;
-        const js = fs.statSync(path.join(__dirname, 'public', 'js', 'app.js')).mtimeMs;
-        return Math.floor(Math.max(css, js)).toString(36);
-    } catch (e) {
+        const a = fs.statSync(path.join(PUBLIC_DIR, 'css', 'styles.css')).mtimeMs;
+        const b = fs.statSync(path.join(PUBLIC_DIR, 'js', 'app.js')).mtimeMs;
+        return Math.floor(Math.max(a, b)).toString(36);
+    } catch {
         return Date.now().toString(36);
     }
 }
 
 app.get('/', (req, res) => {
-    fs.readFile(path.join(__dirname, 'public', 'index.html'), 'utf8', (err, html) => {
+    fs.readFile(path.join(PUBLIC_DIR, 'index.html'), 'utf8', (err, html) => {
         if (err) return res.status(500).send('Failed to load app');
         res.set('Cache-Control', 'no-store, must-revalidate');
         res.type('html').send(html.replace(/__V__/g, assetVersion()));
     });
 });
 
-// Start server
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+// ---------------------------------------------------------------- uploads ---
+
+const upload = multer({
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => cb(null, UPLOAD_DIR),
+        filename: (req, file, cb) => {
+            const safe = path.extname(file.originalname).slice(0, 12).replace(/[^\w.]/g, '');
+            cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${safe}`);
+        }
+    }),
+    limits: { fileSize: 25 * 1024 * 1024 }
 });
+
+// ------------------------------------------------------------------ auth ----
+
+function sign(user) {
+    return jwt.sign({ id: user.id, phone: user.phone, name: user.name }, JWT_SECRET, {
+        expiresIn: '30d'
+    });
+}
+
+function auth(req, res, next) {
+    const header = req.headers.authorization || '';
+    const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+    if (!token || token === 'null' || token === 'undefined') {
+        return res.status(401).json({ error: 'Not signed in' });
+    }
+    try {
+        req.user = jwt.verify(token, JWT_SECRET);
+        next();
+    } catch {
+        res.status(401).json({ error: 'Session expired' });
+    }
+}
+
+// Wraps async handlers so a rejected promise becomes a clean 500.
+const wrap = (fn) => (req, res) =>
+    Promise.resolve(fn(req, res)).catch((err) => {
+        console.error(`[api] ${req.method} ${req.path}`, err);
+        if (!res.headersSent) res.status(500).json({ error: 'Server error' });
+    });
+
+const normalisePhone = (p) => String(p || '').replace(/[\s\-().]/g, '');
+
+const publicUser = (u) => ({
+    id: u.id,
+    phone: u.phone,
+    name: u.name,
+    avatar: u.avatar,
+    about: u.about
+});
+
+app.post('/api/auth/register', wrap(async (req, res) => {
+    const phone = normalisePhone(req.body.phone);
+    const name = String(req.body.name || '').trim();
+    const password = String(req.body.password || '');
+
+    if (!/^\+?\d{7,15}$/.test(phone)) return res.status(400).json({ error: 'Enter a valid phone number' });
+    if (name.length < 2) return res.status(400).json({ error: 'Enter your name' });
+    if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+
+    const existing = await db.get('SELECT id FROM users WHERE phone = ?', [phone]);
+    if (existing) return res.status(409).json({ error: 'That number is already registered' });
+
+    const hash = await bcrypt.hash(password, 10);
+    const { lastID } = await db.run(
+        'INSERT INTO users (phone, name, password) VALUES (?, ?, ?)',
+        [phone, name, hash]
+    );
+
+    const user = await db.get('SELECT * FROM users WHERE id = ?', [lastID]);
+    res.json({ token: sign(user), user: publicUser(user) });
+}));
+
+app.post('/api/auth/login', wrap(async (req, res) => {
+    const phone = normalisePhone(req.body.phone);
+    const password = String(req.body.password || '');
+
+    const user = await db.get('SELECT * FROM users WHERE phone = ?', [phone]);
+    if (!user || !(await bcrypt.compare(password, user.password))) {
+        return res.status(401).json({ error: 'Wrong phone number or password' });
+    }
+
+    res.json({ token: sign(user), user: publicUser(user) });
+}));
+
+app.get('/api/me', auth, wrap(async (req, res) => {
+    const user = await db.get('SELECT * FROM users WHERE id = ?', [req.user.id]);
+    if (!user) return res.status(401).json({ error: 'Account no longer exists' });
+    res.json(publicUser(user));
+}));
+
+app.put('/api/me', auth, wrap(async (req, res) => {
+    const name = String(req.body.name || '').trim();
+    const about = String(req.body.about || '').trim();
+    if (name.length < 2) return res.status(400).json({ error: 'Enter your name' });
+
+    await db.run('UPDATE users SET name = ?, about = ? WHERE id = ?', [name, about, req.user.id]);
+    const user = await db.get('SELECT * FROM users WHERE id = ?', [req.user.id]);
+    res.json(publicUser(user));
+}));
+
+// -------------------------------------------------------------- contacts ----
+
+/** Returns the conversation id for a pair, creating it when missing. */
+async function conversationFor(a, b) {
+    const [x, y] = a < b ? [a, b] : [b, a];
+    const found = await db.get('SELECT id FROM conversations WHERE user_a = ? AND user_b = ?', [x, y]);
+    if (found) return found.id;
+    const { lastID } = await db.run('INSERT INTO conversations (user_a, user_b) VALUES (?, ?)', [x, y]);
+    return lastID;
+}
+
+app.get('/api/users/search', auth, wrap(async (req, res) => {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 2) return res.json([]);
+    const like = `%${q}%`;
+    const rows = await db.all(
+        `SELECT u.id, u.name, u.phone, u.avatar, u.about, u.is_online,
+                EXISTS(SELECT 1 FROM contacts c
+                        WHERE c.owner_id = ? AND c.contact_id = u.id) AS is_contact
+           FROM users u
+          WHERE u.id != ? AND (u.name LIKE ? OR u.phone LIKE ?)
+       ORDER BY u.name
+          LIMIT 25`,
+        [req.user.id, req.user.id, like, like]
+    );
+    res.json(rows);
+}));
+
+app.get('/api/contacts', auth, wrap(async (req, res) => {
+    const rows = await db.all(
+        `SELECT u.id                AS contact_id,
+                COALESCE(c.nickname, u.name) AS name,
+                u.phone, u.avatar, u.about, u.is_online, u.last_seen,
+                cv.id               AS conversation_id,
+                (SELECT body FROM messages m
+                  WHERE m.conversation_id = cv.id AND m.is_deleted = 0
+               ORDER BY m.id DESC LIMIT 1)        AS last_message,
+                (SELECT kind FROM messages m
+                  WHERE m.conversation_id = cv.id AND m.is_deleted = 0
+               ORDER BY m.id DESC LIMIT 1)        AS last_kind,
+                (SELECT created_at FROM messages m
+                  WHERE m.conversation_id = cv.id AND m.is_deleted = 0
+               ORDER BY m.id DESC LIMIT 1)        AS last_at,
+                (SELECT COUNT(*) FROM messages m
+                  WHERE m.conversation_id = cv.id
+                    AND m.receiver_id = ? AND m.read_at IS NULL
+                    AND m.is_deleted = 0)         AS unread
+           FROM contacts c
+           JOIN users u ON u.id = c.contact_id
+      LEFT JOIN conversations cv
+                 ON cv.user_a = MIN(c.owner_id, c.contact_id)
+                AND cv.user_b = MAX(c.owner_id, c.contact_id)
+          WHERE c.owner_id = ?
+       ORDER BY (last_at IS NULL), last_at DESC, u.name`,
+        [req.user.id, req.user.id]
+    );
+    res.json(rows);
+}));
+
+app.post('/api/contacts', auth, wrap(async (req, res) => {
+    const phone = normalisePhone(req.body.phone);
+    const target = req.body.userId
+        ? await db.get('SELECT * FROM users WHERE id = ?', [req.body.userId])
+        : await db.get('SELECT * FROM users WHERE phone = ?', [phone]);
+
+    if (!target) return res.status(404).json({ error: 'No account found with that number' });
+    if (target.id === req.user.id) return res.status(400).json({ error: "You can't add yourself" });
+
+    await db.run(
+        'INSERT OR IGNORE INTO contacts (owner_id, contact_id, nickname) VALUES (?, ?, ?)',
+        [req.user.id, target.id, req.body.nickname || null]
+    );
+    // Make the contact mutual so either side can start the chat.
+    await db.run(
+        'INSERT OR IGNORE INTO contacts (owner_id, contact_id) VALUES (?, ?)',
+        [target.id, req.user.id]
+    );
+    const conversationId = await conversationFor(req.user.id, target.id);
+
+    io.to(`user:${target.id}`).emit('contacts:changed');
+    res.json({ contact: publicUser(target), conversationId });
+}));
+
+app.delete('/api/contacts/:id', auth, wrap(async (req, res) => {
+    await db.run('DELETE FROM contacts WHERE owner_id = ? AND contact_id = ?', [
+        req.user.id, req.params.id
+    ]);
+    res.json({ ok: true });
+}));
+
+// --------------------------------------------------------------- messages ---
+
+/** Confirms the signed-in user belongs to the conversation. */
+async function assertMember(conversationId, userId) {
+    const cv = await db.get('SELECT * FROM conversations WHERE id = ?', [conversationId]);
+    if (!cv) return null;
+    if (cv.user_a !== userId && cv.user_b !== userId) return null;
+    return cv;
+}
+
+app.get('/api/messages/:conversationId', auth, wrap(async (req, res) => {
+    const cv = await assertMember(Number(req.params.conversationId), req.user.id);
+    if (!cv) return res.status(404).json({ error: 'Conversation not found' });
+
+    const rows = await db.all(
+        `SELECT id, conversation_id, sender_id, receiver_id, body, kind,
+                file_url, file_name, file_size, duration,
+                is_edited, is_deleted, delivered_at, read_at, created_at
+           FROM messages
+          WHERE conversation_id = ?
+       ORDER BY id ASC
+          LIMIT 500`,
+        [cv.id]
+    );
+
+    // Opening a chat marks everything addressed to me as read.
+    await db.run(
+        `UPDATE messages SET read_at = CURRENT_TIMESTAMP
+          WHERE conversation_id = ? AND receiver_id = ? AND read_at IS NULL`,
+        [cv.id, req.user.id]
+    );
+
+    const other = cv.user_a === req.user.id ? cv.user_b : cv.user_a;
+    io.to(`user:${other}`).emit('messages:read', { conversationId: cv.id, by: req.user.id });
+
+    res.json(rows);
+}));
+
+app.post('/api/messages', auth, wrap(async (req, res) => {
+    const receiverId = Number(req.body.receiverId);
+    const kind = ['text', 'image', 'video', 'audio', 'file'].includes(req.body.kind)
+        ? req.body.kind : 'text';
+    const body = String(req.body.body || '').slice(0, 4000);
+
+    if (!receiverId) return res.status(400).json({ error: 'Missing recipient' });
+    if (kind === 'text' && !body.trim()) return res.status(400).json({ error: 'Message is empty' });
+
+    const receiver = await db.get('SELECT id FROM users WHERE id = ?', [receiverId]);
+    if (!receiver) return res.status(404).json({ error: 'Recipient not found' });
+
+    const conversationId = await conversationFor(req.user.id, receiverId);
+
+    const { lastID } = await db.run(
+        `INSERT INTO messages
+            (conversation_id, sender_id, receiver_id, body, kind, file_url, file_name, file_size, duration)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            conversationId, req.user.id, receiverId, body, kind,
+            req.body.fileUrl || null, req.body.fileName || null,
+            req.body.fileSize || null, req.body.duration || null
+        ]
+    );
+
+    const message = await db.get('SELECT * FROM messages WHERE id = ?', [lastID]);
+
+    // Deliver instantly to the recipient (and the sender's other tabs).
+    io.to(`user:${receiverId}`).emit('message:new', message);
+    io.to(`user:${req.user.id}`).emit('message:new', message);
+
+    res.json(message);
+}));
+
+app.put('/api/messages/:id', auth, wrap(async (req, res) => {
+    const msg = await db.get('SELECT * FROM messages WHERE id = ?', [req.params.id]);
+    if (!msg || msg.sender_id !== req.user.id) return res.status(404).json({ error: 'Message not found' });
+
+    const body = String(req.body.body || '').trim().slice(0, 4000);
+    if (!body) return res.status(400).json({ error: 'Message is empty' });
+
+    await db.run('UPDATE messages SET body = ?, is_edited = 1 WHERE id = ?', [body, msg.id]);
+    const updated = await db.get('SELECT * FROM messages WHERE id = ?', [msg.id]);
+
+    io.to(`user:${msg.receiver_id}`).emit('message:updated', updated);
+    io.to(`user:${msg.sender_id}`).emit('message:updated', updated);
+    res.json(updated);
+}));
+
+app.delete('/api/messages/:id', auth, wrap(async (req, res) => {
+    const msg = await db.get('SELECT * FROM messages WHERE id = ?', [req.params.id]);
+    if (!msg || msg.sender_id !== req.user.id) return res.status(404).json({ error: 'Message not found' });
+
+    await db.run(
+        "UPDATE messages SET is_deleted = 1, body = '', file_url = NULL WHERE id = ?",
+        [msg.id]
+    );
+    const updated = await db.get('SELECT * FROM messages WHERE id = ?', [msg.id]);
+
+    io.to(`user:${msg.receiver_id}`).emit('message:updated', updated);
+    io.to(`user:${msg.sender_id}`).emit('message:updated', updated);
+    res.json(updated);
+}));
+
+app.delete('/api/conversations/:id', auth, wrap(async (req, res) => {
+    const cv = await assertMember(Number(req.params.id), req.user.id);
+    if (!cv) return res.status(404).json({ error: 'Conversation not found' });
+    await db.run('DELETE FROM messages WHERE conversation_id = ?', [cv.id]);
+    res.json({ ok: true });
+}));
+
+// ---------------------------------------------------------------- upload ----
+
+app.post('/api/upload', auth, (req, res) => {
+    upload.single('file')(req, res, (err) => {
+        if (err) {
+            const msg = err.code === 'LIMIT_FILE_SIZE'
+                ? 'File is too large (max 25MB)'
+                : 'Upload failed';
+            return res.status(400).json({ error: msg });
+        }
+        if (!req.file) return res.status(400).json({ error: 'No file received' });
+
+        res.json({
+            url: `/uploads/${req.file.filename}`,
+            name: req.file.originalname,
+            size: req.file.size,
+            mime: req.file.mimetype
+        });
+    });
+});
+
+// -------------------------------------------------------------- socket.io ---
+
+const online = new Map(); // userId -> Set(socketId)
+
+io.use((socket, next) => {
+    const token = socket.handshake.auth && socket.handshake.auth.token;
+    try {
+        socket.user = jwt.verify(token, JWT_SECRET);
+        next();
+    } catch {
+        next(new Error('unauthorized'));
+    }
+});
+
+io.on('connection', async (socket) => {
+    const userId = socket.user.id;
+    socket.join(`user:${userId}`);
+
+    if (!online.has(userId)) online.set(userId, new Set());
+    online.get(userId).add(socket.id);
+
+    if (online.get(userId).size === 1) {
+        await db.run('UPDATE users SET is_online = 1 WHERE id = ?', [userId]);
+        socket.broadcast.emit('presence', { userId, online: true });
+    }
+
+    // Tell the newcomer who is currently online.
+    socket.emit('presence:bulk', [...online.keys()]);
+
+    // Mark undelivered messages as delivered now that they are connected.
+    await db.run(
+        'UPDATE messages SET delivered_at = CURRENT_TIMESTAMP WHERE receiver_id = ? AND delivered_at IS NULL',
+        [userId]
+    );
+
+    socket.on('typing', ({ toUserId, conversationId, typing }) => {
+        io.to(`user:${toUserId}`).emit('typing', {
+            conversationId, from: userId, typing: !!typing
+        });
+    });
+
+    socket.on('messages:seen', async ({ conversationId }) => {
+        await db.run(
+            `UPDATE messages SET read_at = CURRENT_TIMESTAMP
+              WHERE conversation_id = ? AND receiver_id = ? AND read_at IS NULL`,
+            [conversationId, userId]
+        );
+        const cv = await db.get('SELECT * FROM conversations WHERE id = ?', [conversationId]);
+        if (cv) {
+            const other = cv.user_a === userId ? cv.user_b : cv.user_a;
+            io.to(`user:${other}`).emit('messages:read', { conversationId, by: userId });
+        }
+    });
+
+    // ---- WebRTC signalling: the server only relays, media stays peer-to-peer ----
+    socket.on('call:offer', ({ toUserId, offer, media }) => {
+        io.to(`user:${toUserId}`).emit('call:incoming', { from: userId, offer, media });
+    });
+    socket.on('call:answer', ({ toUserId, answer }) => {
+        io.to(`user:${toUserId}`).emit('call:answered', { from: userId, answer });
+    });
+    socket.on('call:ice', ({ toUserId, candidate }) => {
+        io.to(`user:${toUserId}`).emit('call:ice', { from: userId, candidate });
+    });
+    socket.on('call:decline', ({ toUserId }) => {
+        io.to(`user:${toUserId}`).emit('call:declined', { from: userId });
+    });
+    socket.on('call:end', ({ toUserId }) => {
+        io.to(`user:${toUserId}`).emit('call:ended', { from: userId });
+    });
+
+    socket.on('disconnect', async () => {
+        const set = online.get(userId);
+        if (!set) return;
+        set.delete(socket.id);
+        if (set.size === 0) {
+            online.delete(userId);
+            await db.run(
+                'UPDATE users SET is_online = 0, last_seen = CURRENT_TIMESTAMP WHERE id = ?',
+                [userId]
+            );
+            socket.broadcast.emit('presence', { userId, online: false });
+        }
+    });
+});
+
+// ------------------------------------------------------------------ boot ----
+
+db.init()
+    .then(() => {
+        server.listen(PORT, '0.0.0.0', () => {
+            console.log(`ChatConnect running on http://localhost:${PORT}`);
+        });
+    })
+    .catch((err) => {
+        console.error('Failed to start:', err);
+        process.exit(1);
+    });
