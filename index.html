@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChatConnect - Modern Messaging Platform</title>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <!-- Login/Register Screen -->
+    <div class="auth-screen" id="authScreen">
+        <div class="auth-container">
+            <div class="auth-box">
+                <div class="logo-section">
+                    <div class="logo">
+                        <svg viewBox="0 0 100 100" width="80" height="80">
+                            <defs>
+                                <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+                                    <stop offset="0%" style="stop-color:#FF6B6B;stop-opacity:1" />
+                                    <stop offset="100%" style="stop-color:#4ECDC4;stop-opacity:1" />
+                                </linearGradient>
+                            </defs>
+                            <path d="M50 10 C 80 10, 90 30, 90 50 C 90 70, 80 90, 50 90 C 20 90, 10 70, 10 50 C 10 30, 20 10, 50 10 Z" fill="url(#grad1)"/>
+                            <text x="50" y="60" font-size="30" fill="white" text-anchor="middle">CC</text>
+                        </svg>
+                    </div>
+                    <h1>ChatConnect</h1>
+                    <p>Connect with anyone, anywhere</p>
+                </div>
+
+                <div class="auth-tabs">
+                    <button class="tab-btn active" onclick="switchTab('login')">Sign In</button>
+                    <button class="tab-btn" onclick="switchTab('register')">Create Account</button>
+                </div>
+
+                <form id="loginForm" class="auth-form active">
+                    <div class="form-group">
+                        <input type="tel" id="loginPhone" placeholder=" " required>
+                        <label>Phone Number</label>
+                        <span class="input-icon">📱</span>
+                    </div>
+                    <div class="form-group">
+                        <input type="password" id="loginPassword" placeholder=" " required>
+                        <label>Password</label>
+                        <span class="input-icon">🔐</span>
+                    </div>
+                    <button type="submit" class="btn-submit">
+                        <span>Sign In</span>
+                        <div class="loading-spinner"></div>
+                    </button>
+                </form>
+
+                <form id="registerForm" class="auth-form">
+                    <div class="form-group">
+                        <input type="text" id="registerName" placeholder=" " required>
+                        <label>Full Name</label>
+                        <span class="input-icon">👤</span>
+                    </div>
+                    <div class="form-group">
+                        <input type="tel" id="registerPhone" placeholder=" " required>
+                        <label>Phone Number</label>
+                        <span class="input-icon">📱</span>
+                    </div>
+                    <div class="form-group">
+                        <input type="password" id="registerPassword" placeholder=" " required>
+                        <label>Password</label>
+                        <span class="input-icon">🔐</span>
+                    </div>
+                    <button type="submit" class="btn-submit">
+                        <span>Create Account</span>
+                        <div class="loading-spinner"></div>
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Chat Interface -->
+    <div class="chat-interface" id="chatInterface" style="display: none;">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <header class="sidebar-header">
+                <div class="user-profile">
+                    <img src="https://ui-avatars.com/api/?name=User&background=FF6B6B&color=fff" alt="Profile" class="profile-img" id="profileImg">
+                    <div class="profile-info">
+                        <h3 id="userName">User Name</h3>
+                        <p id="userStatus">Online</p>
+                    </div>
+                    <div class="header-actions">
+                        <button class="btn-icon" onclick="openSettings()">⚙️</button>
+                        <button class="btn-icon" onclick="logout()">🚪</button>
+                    </div>
+                </div>
+                <div class="search-bar">
+                    <input type="text" placeholder="Search or start new chat..." id="searchInput">
+                    <span class="search-icon">🔍</span>
+                </div>
+            </header>
+
+            <div class="contacts-list" id="contactsList">
+                <!-- Contacts will be loaded here -->
+            </div>
+
+            <button class="fab" onclick="openAddContact()">
+                <span>+</span>
+            </button>
+        </aside>
+
+        <!-- Chat Area -->
+        <main class="chat-area">
+            <!-- Welcome Screen -->
+            <div class="welcome-screen" id="welcomeScreen">
+                <div class="welcome-content">
+                    <div class="welcome-illustration">
+                        <svg viewBox="0 0 200 200" width="150" height="150">
+                            <defs>
+                                <linearGradient id="grad2" x1="0%" y1="0%" x2="100%" y2="100%">
+                                    <stop offset="0%" style="stop-color:#667eea;stop-opacity:1" />
+                                    <stop offset="100%" style="stop-color:#764ba2;stop-opacity:1" />
+                                </linearGradient>
+                            </defs>
+                            <circle cx="100" cy="100" r="80" fill="url(#grad2)" opacity="0.2"/>
+                            <path d="M60 100 Q100 60 140 100 T180 100" stroke="url(#grad2)" stroke-width="3" fill="none"/>
+                            <circle cx="60" cy="100" r="8" fill="url(#grad2)"/>
+                            <circle cx="100" cy="60" r="8" fill="url(#grad2)"/>
+                            <circle cx="140" cy="100" r="8" fill="url(#grad2)"/>
+                        </svg>
+                    </div>
+                    <h2>Welcome to ChatConnect</h2>
+                    <p>Select a conversation or start a new chat</p>
+                </div>
+            </div>
+
+            <!-- Chat View -->
+            <div class="chat-view" id="chatView" style="display: none;">
+                <header class="chat-header">
+                    <div class="chat-info">
+                        <img src="" alt="Contact" class="contact-img" id="contactImg">
+                        <div class="contact-details">
+                            <h3 id="contactName">Contact Name</h3>
+                            <p id="contactStatus">Last seen recently</p>
+                        </div>
+                    </div>
+                    <div class="chat-actions">
+                        <button class="btn-icon" onclick="makeCall('audio')">📞</button>
+                        <button class="btn-icon" onclick="makeCall('video')">📹</button>
+                        <button class="btn-icon" onclick="openChatMenu()">⋮</button>
+                    </div>
+                </header>
+
+                <div class="messages-area" id="messagesArea">
+                    <!-- Messages will be loaded here -->
+                </div>
+
+                <div class="typing-indicator" id="typingIndicator" style="display: none;">
+                    <div class="typing-dots">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </div>
+                </div>
+
+                <footer class="message-input-area">
+                    <button class="btn-icon" onclick="openAttachment()">📎</button>
+                    <input type="text" placeholder="Type a message..." id="messageInput" class="message-input">
+                    <button class="btn-icon" onclick="openEmoji()">😊</button>
+                    <button class="btn-send" onclick="sendMessage()">➤</button>
+                </footer>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modals -->
+    <!-- Add Contact Modal -->
+    <div class="modal" id="addContactModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Add New Contact</h3>
+                <button class="btn-close" onclick="closeModal('addContactModal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <input type="tel" id="contactPhone" placeholder=" " required>
+                    <label>Phone Number</label>
+                </div>
+                <div class="form-group">
+                    <input type="text" id="contactName" placeholder=" ">
+                    <label>Name (Optional)</label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="closeModal('addContactModal')">Cancel</button>
+                <button class="btn-primary" onclick="addContact()">Add Contact</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Message Options Menu -->
+    <div class="dropdown-menu" id="messageMenu" style="display: none;">
+        <button onclick="editMessage()">✏️ Edit</button>
+        <button onclick="deleteMessage()">🗑️ Delete</button>
+        <button onclick="copyMessage()">📋 Copy</button>
+        <button onclick="forwardMessage()">↪️ Forward</button>
+    </div>
+
+    <!-- Toast Notification -->
+    <div class="toast" id="toast"></div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
