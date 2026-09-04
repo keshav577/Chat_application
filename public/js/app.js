@@ -67,6 +67,19 @@ const token = () => store.get('token');
 
 // ------------------------------------------------------------- api -----
 
+// Asks the server whether a token is still good. Used to tell a genuinely
+// expired session apart from a one-off 401, so we never sign a user out by
+// mistake. Network failures count as "still valid" — losing connectivity is
+// not a reason to destroy a login.
+async function tokenStillValid(t) {
+    try {
+        const res = await fetch('/api/me', { headers: { Authorization: `Bearer ${t}` } });
+        return res.status !== 401;
+    } catch {
+        return true;
+    }
+}
+
 async function api(path, options = {}) {
     const opts = { ...options, headers: { ...(options.headers || {}) } };
     const t = token();
@@ -84,6 +97,13 @@ async function api(path, options = {}) {
     }
 
     if (res.status === 401) {
+        // Don't tear down the session on a single 401 — a restarted server or a
+        // proxy that dropped the Authorization header would log the user out
+        // moments after a successful sign-in. Re-verify the token first and
+        // only sign out when it is genuinely no longer accepted.
+        if (!opts._revalidated && t && await tokenStillValid(t)) {
+            return api(path, { ...options, _revalidated: true });
+        }
         signOut(true);
         throw new Error('Session expired');
     }
@@ -247,8 +267,11 @@ async function authenticate(path, payload, button) {
         showApp();
         paintMe();
         connectSocket();
-        await loadContacts();
+        // Greet the user as soon as the account is confirmed. Loading contacts
+        // is secondary: if it fails we stay signed in and show that error
+        // instead of pretending the sign-in itself failed.
         toast(`Welcome, ${data.user.name}`, 'ok');
+        await loadContacts();
     } catch (err) {
         // A duplicate signup should guide the user to sign in, not dead-end.
         if (/already registered/i.test(err.message)) {
@@ -348,7 +371,18 @@ async function loadContacts() {
     try {
         state.contacts = await api('/api/contacts');
         renderChatList();
-    } catch { /* api() surfaces the error */ }
+    } catch (err) {
+        // Never let a failed refresh blank an already-populated list.
+        if (err.message === 'Session expired') return;
+        if (!state.contacts.length) {
+            $('chatList').innerHTML = `<div class="hint">
+                <div class="hi">⚠️</div><b>Couldn't load chats</b>
+                <p>${esc(err.message)}</p>
+                <button class="retry" id="retryContacts">Try again</button></div>`;
+            const btn = $('retryContacts');
+            if (btn) btn.onclick = loadContacts;
+        }
+    }
 }
 
 function renderChatList() {

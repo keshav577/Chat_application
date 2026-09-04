@@ -852,3 +852,17 @@ button { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
     * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* Retry button inside an error hint */
+.hint .retry {
+    margin-top: 14px;
+    padding: 9px 20px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--accent, #00a884);
+    color: #05231d;
+    font-weight: 600;
+    font-size: 14px;
+    cursor: pointer;
+}
+.hint .retry:hover { filter: brightness(1.08); }

@@ -32,7 +32,8 @@ machine against a single `chat.db` file.
 
 ```bash
 npm install
-npm start
+npm start          # http://localhost:3000
+npm run seed       # optional: demo accounts + a sample chat
 ```
 
 Open <http://localhost:3000>.
@@ -43,18 +44,30 @@ new-chat button, and start typing.
 
 ### Demo accounts
 
-All use the password `pass1234`:
+Created by `npm run seed`. All use the password `pass1234`:
 
-| Name   | Phone      |
-|--------|------------|
-| Alice  | 9990000001 |
-| Bob    | 9990000002 |
-| Keshav | 6265728921 |
-| Priya  | 9812345670 |
-| Rahul  | 9812345671 |
+| Name              | Phone      |
+|-------------------|------------|
+| Keshav Maheshwari | 1234567890 |
+| Alice Johnson     | 9990000001 |
+| Bob Singh         | 9990000002 |
+| Priya Sharma      | 9812345670 |
+| Rahul Verma       | 9812345671 |
 
 These live only in your local `chat.db`. Delete that file to start fresh — the schema
-is recreated automatically on the next launch.
+is recreated automatically on the next launch, then re-run `npm run seed`.
+
+## Tests
+
+With the server running in another terminal:
+
+```bash
+npm test        # 44 API, auth and realtime checks
+npm run test:ui # 29 browser-behaviour checks in JSDOM
+```
+
+The UI suite covers the session-handling regressions specifically: a transient 401 or
+a network blip must not log you out, while a genuinely invalid token still must.
 
 ## Project layout
 
