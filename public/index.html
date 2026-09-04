@@ -2,9 +2,9 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>ChatConnect - Modern Messaging Platform</title>
-    <link rel="stylesheet" href="css/styles.css">
+    <link rel="stylesheet" href="css/styles.css?v=__V__">
 </head>
 <body>
     <!-- Login/Register Screen -->
@@ -29,8 +29,8 @@
                 </div>
 
                 <div class="auth-tabs">
-                    <button class="tab-btn active" onclick="switchTab('login')">Sign In</button>
-                    <button class="tab-btn" onclick="switchTab('register')">Create Account</button>
+                    <button class="tab-btn active" onclick="switchTab('login', event)">Sign In</button>
+                    <button class="tab-btn" onclick="switchTab('register', event)">Create Account</button>
                 </div>
 
                 <form id="loginForm" class="auth-form active">
@@ -77,6 +77,7 @@
 
     <!-- Main Chat Interface -->
     <div class="chat-interface" id="chatInterface" style="display: none;">
+        <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
         <!-- Sidebar -->
         <aside class="sidebar">
             <header class="sidebar-header">
@@ -110,6 +111,7 @@
         <main class="chat-area">
             <!-- Welcome Screen -->
             <div class="welcome-screen" id="welcomeScreen">
+                <button class="btn-menu" onclick="openSidebar()" aria-label="Open chats">&#9776;</button>
                 <div class="welcome-content">
                     <div class="welcome-illustration">
                         <svg viewBox="0 0 200 200" width="150" height="150">
@@ -135,6 +137,7 @@
             <div class="chat-view" id="chatView" style="display: none;">
                 <header class="chat-header">
                     <div class="chat-info">
+                        <button class="btn-back" onclick="closeConversation()" aria-label="Back to chats">&#8592;</button>
                         <img src="" alt="Contact" class="contact-img" id="contactImg">
                         <div class="contact-details">
                             <h3 id="contactName">Contact Name</h3>
@@ -160,12 +163,33 @@
                     </div>
                 </div>
 
+                <div class="attach-sheet" id="attachSheet">
+                    <button onclick="pickFile('image/*')"><span class="ico i-photo">&#128247;</span>Photos</button>
+                    <button onclick="pickFile('video/*')"><span class="ico i-video">&#127909;</span>Video</button>
+                    <button onclick="pickFile('*/*')"><span class="ico i-doc">&#128196;</span>Document</button>
+                </div>
+
+                <div class="emoji-panel" id="emojiPanel">
+                    <div class="emoji-tabs" id="emojiTabs"></div>
+                    <div class="emoji-grid" id="emojiGrid"></div>
+                </div>
+
                 <footer class="message-input-area">
-                    <button class="btn-icon" onclick="openAttachment()">📎</button>
-                    <input type="text" placeholder="Type a message..." id="messageInput" class="message-input">
-                    <button class="btn-icon" onclick="openEmoji()">😊</button>
-                    <button class="btn-send" onclick="sendMessage()">➤</button>
+                    <button class="btn-icon" id="btnEmoji" onclick="toggleEmoji()" title="Emoji">&#128522;</button>
+                    <button class="btn-icon" id="btnAttach" onclick="toggleAttach()" title="Attach">&#128206;</button>
+                    <input type="text" placeholder="Type a message..." id="messageInput" class="message-input" autocomplete="off">
+                    <input type="file" id="fileInput" hidden>
+                    <button class="btn-icon btn-mic" id="btnMic" title="Hold to record voice note">&#127908;</button>
+                    <button class="btn-send" onclick="sendMessage()" title="Send">&#10148;</button>
                 </footer>
+
+                <div class="recording-bar" id="recordingBar">
+                    <span class="rec-dot"></span>
+                    <span class="rec-time" id="recTime">0:00</span>
+                    <span class="rec-hint">Recording voice note...</span>
+                    <button class="rec-cancel" onclick="cancelRecording()">Cancel</button>
+                    <button class="rec-send" onclick="stopRecording(true)">Send</button>
+                </div>
             </div>
         </main>
     </div>
@@ -175,22 +199,27 @@
     <div class="modal" id="addContactModal">
         <div class="modal-content">
             <div class="modal-header">
-                <h3>Add New Contact</h3>
-                <button class="btn-close" onclick="closeModal('addContactModal')">×</button>
+                <div>
+                    <h3>Add People</h3>
+                    <p class="modal-subtitle">Search by name or phone number</p>
+                </div>
+                <button class="btn-close" onclick="closeModal('addContactModal')" aria-label="Close">&times;</button>
             </div>
             <div class="modal-body">
-                <div class="form-group">
-                    <input type="tel" id="contactPhone" placeholder=" " required>
-                    <label>Phone Number</label>
+                <div class="people-search">
+                    <span class="people-search-icon">&#128269;</span>
+                    <input type="text" id="peopleSearchInput" autocomplete="off"
+                           placeholder="Type a name or phone number...">
+                    <button type="button" class="people-search-clear" id="peopleSearchClear"
+                            onclick="clearPeopleSearch()" aria-label="Clear">&times;</button>
                 </div>
-                <div class="form-group">
-                    <input type="text" id="contactName" placeholder=" ">
-                    <label>Name (Optional)</label>
+                <div class="people-results" id="peopleResults">
+                    <div class="people-empty">
+                        <div class="people-empty-icon">&#128101;</div>
+                        <p class="people-empty-title">Find someone to chat with</p>
+                        <p class="people-empty-text">Start typing at least 2 characters to search registered users.</p>
+                    </div>
                 </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn-secondary" onclick="closeModal('addContactModal')">Cancel</button>
-                <button class="btn-primary" onclick="addContact()">Add Contact</button>
             </div>
         </div>
     </div>
@@ -204,9 +233,39 @@
     </div>
 
     <!-- Toast Notification -->
+
+    <!-- Call Overlay -->
+    <div class="call-overlay" id="callOverlay">
+        <div class="call-box">
+            <video id="remoteVideo" autoplay playsinline></video>
+            <video id="localVideo" autoplay playsinline muted></video>
+            <div class="call-meta">
+                <img id="callAvatar" src="" alt="">
+                <h3 id="callName">Calling...</h3>
+                <p id="callStatus">Connecting</p>
+            </div>
+            <div class="call-controls">
+                <button class="call-btn mute" id="btnMute" onclick="toggleMute()" title="Mute">&#127908;</button>
+                <button class="call-btn cam" id="btnCam" onclick="toggleCam()" title="Camera">&#127909;</button>
+                <button class="call-btn hang" onclick="hangUp()" title="End call">&#128222;</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Incoming Call -->
+    <div class="incoming-call" id="incomingCall">
+        <img id="incomingAvatar" src="" alt="">
+        <div class="incoming-text">
+            <h4 id="incomingName">Someone</h4>
+            <p id="incomingType">Incoming call</p>
+        </div>
+        <button class="ic-btn accept" onclick="acceptCall()" title="Accept">&#9989;</button>
+        <button class="ic-btn decline" onclick="declineCall()" title="Decline">&#10060;</button>
+    </div>
+
     <div class="toast" id="toast"></div>
 
     <script src="/socket.io/socket.io.js"></script>
-    <script src="js/app.js"></script>
+    <script src="js/app.js?v=__V__"></script>
 </body>
 </html>

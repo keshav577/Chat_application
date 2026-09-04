@@ -24,8 +24,10 @@ const io = socketIo(server, {
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(express.static('public'));
-app.use('/uploads', express.static('uploads'));
+// `index: false` so express.static doesn't serve index.html directly for '/'.
+// The GET '/' route below renders it with a cache-busting asset version.
+app.use(express.static(path.join(__dirname, 'public'), { index: false }));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Session configuration
 app.use(session({
@@ -42,7 +44,7 @@ app.use(session({
 // Rate limiting
 const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 5, // 5 requests
+    max: process.env.NODE_ENV === 'production' ? 5 : 100,
     message: 'Too many attempts, please try again later'
 });
 
@@ -59,17 +61,13 @@ const storage = multer.diskStorage({
 
 const upload = multer({
     storage,
-    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+    limits: { fileSize: 25 * 1024 * 1024 }, // 25MB (video / voice notes)
     fileFilter: (req, file, cb) => {
-        const allowedTypes = /jpeg|jpg|png|gif|pdf|doc|docx|mp4|mp3/;
-        const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-        const mimetype = allowedTypes.test(file.mimetype);
-        
-        if (mimetype && extname) {
-            return cb(null, true);
-        } else {
-            cb(new Error('Invalid file type'));
-        }
+        const allowed = /jpeg|jpg|png|gif|webp|bmp|svg|pdf|docx?|xlsx?|pptx?|txt|csv|zip|rar|7z|mp4|webm|mov|avi|mkv|mp3|wav|ogg|oga|m4a|aac|opus|flac/;
+        const ext = allowed.test(path.extname(file.originalname).toLowerCase());
+        const mime = /^(image|video|audio)\//.test(file.mimetype) || allowed.test(file.mimetype);
+        if (ext || mime) return cb(null, true);
+        cb(new Error('Unsupported file type'));
     }
 });
 
@@ -236,6 +234,25 @@ app.put('/api/user/profile', verifyToken, upload.single('avatar'), (req, res) =>
 // ===================== CONTACT ROUTES =====================
 
 // Add contact
+// Search registered users by name or phone (excludes self)
+app.get('/api/users/search', verifyToken, (req, res) => {
+    const q = (req.query.q || '').trim();
+    if (q.length < 2) return res.json([]);
+    const like = `%${q}%`;
+    db.all(
+        `SELECT u.id, u.name, u.phone, u.avatar, u.bio, u.is_online,
+                EXISTS(SELECT 1 FROM contacts c WHERE c.user_id = ? AND c.contact_id = u.id) AS is_contact
+         FROM users u
+         WHERE u.id != ? AND (u.name LIKE ? OR u.phone LIKE ?)
+         ORDER BY u.name LIMIT 20`,
+        [req.userId, req.userId, like, like],
+        (err, rows) => {
+            if (err) return res.status(500).json({ error: 'Search failed' });
+            res.json(rows || []);
+        }
+    );
+});
+
 app.post('/api/contacts/add', verifyToken, (req, res) => {
     const { phone, name } = req.body;
     
@@ -370,7 +387,7 @@ app.get('/api/messages/:conversationId', verifyToken, (req, res) => {
 
 // Send message
 app.post('/api/messages/send', verifyToken, (req, res) => {
-    const { receiverId, message, type = 'text' } = req.body;
+    const { receiverId, message, type = 'text', fileUrl = null } = req.body;
     
     // Get or create conversation
     const user1_id = Math.min(req.userId, receiverId);
@@ -388,8 +405,8 @@ app.post('/api/messages/send', verifyToken, (req, res) => {
             
             const insertMessage = (convId) => {
                 db.run(
-                    'INSERT INTO messages (conversation_id, sender_id, receiver_id, message, type) VALUES (?, ?, ?, ?, ?)',
-                    [convId, req.userId, receiverId, message, type],
+                    'INSERT INTO messages (conversation_id, sender_id, receiver_id, message, type, file_url) VALUES (?, ?, ?, ?, ?, ?)',
+                    [convId, req.userId, receiverId, message, type, fileUrl],
                     function(err) {
                         if (err) {
                             return res.status(500).json({ error: 'Failed to send message' });
@@ -557,16 +574,25 @@ app.delete('/api/conversations/:conversationId', verifyToken, (req, res) => {
 
 // ===================== FILE UPLOAD =====================
 
-app.post('/api/upload', verifyToken, upload.single('file'), (req, res) => {
-    if (!req.file) {
-        return res.status(400).json({ error: 'No file uploaded' });
-    }
+app.post('/api/upload', verifyToken, (req, res) => {
+    upload.single('file')(req, res, (err) => {
+        if (err) {
+            const msg = err.code === 'LIMIT_FILE_SIZE'
+                ? 'File is too large (max 25MB)'
+                : (err.message || 'Upload failed');
+            return res.status(400).json({ error: msg });
+        }
+        if (!req.file) {
+            return res.status(400).json({ error: 'No file uploaded' });
+        }
     
-    res.json({
-        filename: req.file.filename,
-        originalName: req.file.originalname,
-        size: req.file.size,
-        url: `/uploads/${req.file.filename}`
+        res.json({
+            filename: req.file.filename,
+            originalName: req.file.originalname,
+            size: req.file.size,
+            mimetype: req.file.mimetype,
+            url: `/uploads/${req.file.filename}`
+        });
     });
 });
 
@@ -625,6 +651,31 @@ io.on('connection', (socket) => {
         );
     });
     
+    // ---------- WebRTC call signalling (peer-to-peer; server only relays) ----------
+    socket.on('callUser', ({ toUserId, offer, callType }) => {
+        io.to(`user_${toUserId}`).emit('incomingCall', {
+            from: socket.userId,
+            offer,
+            callType
+        });
+    });
+
+    socket.on('answerCall', ({ toUserId, answer }) => {
+        io.to(`user_${toUserId}`).emit('callAnswered', { from: socket.userId, answer });
+    });
+
+    socket.on('iceCandidate', ({ toUserId, candidate }) => {
+        io.to(`user_${toUserId}`).emit('iceCandidate', { from: socket.userId, candidate });
+    });
+
+    socket.on('rejectCall', ({ toUserId }) => {
+        io.to(`user_${toUserId}`).emit('callRejected', { from: socket.userId });
+    });
+
+    socket.on('endCall', ({ toUserId }) => {
+        io.to(`user_${toUserId}`).emit('callEnded', { from: socket.userId });
+    });
+
     socket.on('disconnect', () => {
         if (socket.userId) {
             activeUsers.delete(socket.userId);
@@ -652,8 +703,32 @@ io.on('connection', (socket) => {
     });
 });
 
+// Serve the chat UI.
+// index.html is rendered with an asset version stamp derived from the CSS/JS
+// mtimes, so browsers always pick up fresh styles/scripts after an edit
+// instead of silently reusing a cached copy.
+const fs = require('fs');
+
+function assetVersion() {
+    try {
+        const css = fs.statSync(path.join(__dirname, 'public', 'css', 'styles.css')).mtimeMs;
+        const js = fs.statSync(path.join(__dirname, 'public', 'js', 'app.js')).mtimeMs;
+        return Math.floor(Math.max(css, js)).toString(36);
+    } catch (e) {
+        return Date.now().toString(36);
+    }
+}
+
+app.get('/', (req, res) => {
+    fs.readFile(path.join(__dirname, 'public', 'index.html'), 'utf8', (err, html) => {
+        if (err) return res.status(500).send('Failed to load app');
+        res.set('Cache-Control', 'no-store, must-revalidate');
+        res.type('html').send(html.replace(/__V__/g, assetVersion()));
+    });
+});
+
 // Start server
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);
 });
