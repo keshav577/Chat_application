@@ -24,7 +24,9 @@ const io = socketIo(server, {
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(express.static(path.join(__dirname, 'public')));
+// `index: false` so express.static doesn't serve index.html directly for '/'.
+// The GET '/' route below renders it with a cache-busting asset version.
+app.use(express.static(path.join(__dirname, 'public'), { index: false }));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Session configuration
@@ -671,9 +673,28 @@ io.on('connection', (socket) => {
     });
 });
 
-// Serve the chat UI
+// Serve the chat UI.
+// index.html is rendered with an asset version stamp derived from the CSS/JS
+// mtimes, so browsers always pick up fresh styles/scripts after an edit
+// instead of silently reusing a cached copy.
+const fs = require('fs');
+
+function assetVersion() {
+    try {
+        const css = fs.statSync(path.join(__dirname, 'public', 'css', 'styles.css')).mtimeMs;
+        const js = fs.statSync(path.join(__dirname, 'public', 'js', 'app.js')).mtimeMs;
+        return Math.floor(Math.max(css, js)).toString(36);
+    } catch (e) {
+        return Date.now().toString(36);
+    }
+}
+
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    fs.readFile(path.join(__dirname, 'public', 'index.html'), 'utf8', (err, html) => {
+        if (err) return res.status(500).send('Failed to load app');
+        res.set('Cache-Control', 'no-store, must-revalidate');
+        res.type('html').send(html.replace(/__V__/g, assetVersion()));
+    });
 });
 
 // Start server

@@ -514,6 +514,14 @@ function handlePeopleSearch(value) {
     }, 250);
 }
 
+function highlightMatch(text, query) {
+    const safe = escapeHtml(text);
+    const q = query.trim();
+    if (!q) return safe;
+    const escaped = escapeHtml(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return safe.replace(new RegExp(`(${escaped})`, 'ig'), '<mark>$1</mark>');
+}
+
 function renderPeopleResults(users, query) {
     const box = document.getElementById('peopleResults');
 
@@ -528,24 +536,27 @@ function renderPeopleResults(users, query) {
         return;
     }
 
-    box.innerHTML = users.map(u => {
+    const rows = users.map((u, i) => {
         const avatar = u.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(u.name)}&background=667eea&color=fff`;
         const action = u.is_contact
             ? `<button class="btn-added" onclick="messageExisting(${u.id})">Message</button>`
             : `<button class="btn-add" onclick="addPerson(${u.id}, this)">Add</button>`;
         return `
-            <div class="person-row">
+            <div class="person-row" style="animation-delay:${i * 35}ms">
                 <div class="person-avatar-wrap">
                     <img class="person-avatar" src="${avatar}" alt="${escapeHtml(u.name)}">
                     ${u.is_online ? '<span class="online-indicator"></span>' : ''}
                 </div>
                 <div class="person-info">
-                    <div class="person-name">${escapeHtml(u.name)}</div>
-                    <div class="person-phone">${escapeHtml(u.phone)}</div>
+                    <div class="person-name">${highlightMatch(u.name, query)}</div>
+                    <div class="person-phone">${highlightMatch(u.phone, query)}</div>
                 </div>
                 ${action}
             </div>`;
     }).join('');
+
+    const label = `${users.length} ${users.length === 1 ? 'person' : 'people'} found`;
+    box.innerHTML = `<div class="people-results-head">${label}</div>${rows}`;
 }
 
 // Add by user id straight from the search results.
