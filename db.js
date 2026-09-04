@@ -9,7 +9,11 @@
  */
 const path = require('path');
 
-const DB_FILE = path.join(__dirname, 'chat.db');
+// DB_PATH lets the test suite run against a throwaway database instead of
+// polluting the real one with fixture accounts.
+const DB_FILE = process.env.DB_PATH
+    ? path.resolve(process.env.DB_PATH)
+    : path.join(__dirname, 'chat.db');
 
 let impl;
 

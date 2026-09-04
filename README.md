@@ -59,12 +59,13 @@ is recreated automatically on the next launch, then re-run `npm run seed`.
 
 ## Tests
 
-With the server running in another terminal:
-
 ```bash
-npm test        # 44 API, auth and realtime checks
-npm run test:ui # 29 browser-behaviour checks in JSDOM
+npm test        # both suites: 44 API/realtime + 32 browser checks
 ```
+
+`npm test` starts its own server on a temporary database, so fixture accounts
+never touch your real `chat.db`. To run one suite against an already-running
+server, use `npm run test:api` or `npm run test:ui`.
 
 The UI suite covers the session-handling regressions specifically: a transient 401 or
 a network blip must not log you out, while a genuinely invalid token still must.

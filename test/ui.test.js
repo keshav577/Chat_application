@@ -95,6 +95,34 @@ const unauthorized = () => new Response('{"error":"Session expired"}',
         if (errors.length) console.log('   ', errors);
     }
 
+    console.log('\n--- login errors must not be reported as "session expired" ---');
+    {
+        // Seed an account, then sign in with the wrong password.
+        const phone = rnd();
+        await fetch(B + '/api/auth/register', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone, name: 'Login Tester', password: 'pass1234' })
+        });
+
+        const bad = await boot();
+        bad.w.document.getElementById('siPhone').value = phone;
+        bad.w.document.getElementById('siPass').value = 'wrongpass';
+        bad.w.document.getElementById('signinForm').dispatchEvent(new bad.w.Event('submit', { bubbles: true, cancelable: true }));
+        await wait(1500);
+        const badToast = bad.w.document.getElementById('toast').textContent;
+        chk('wrong password says so', /wrong|incorrect/i.test(badToast));
+        chk('wrong password is not "session expired"', !/session expired/i.test(badToast));
+
+        // A stale token must not break a valid sign-in, nor mask the real error.
+        const stale = { v: 'token=stale.invalid.jwt' };
+        const w2 = (await boot({ jar: stale })).w;
+        w2.document.getElementById('siPhone').value = phone;
+        w2.document.getElementById('siPass').value = 'pass1234';
+        w2.document.getElementById('signinForm').dispatchEvent(new w2.Event('submit', { bubbles: true, cancelable: true }));
+        await wait(1600);
+        chk('valid login works despite a stale token', signedIn(w2));
+    }
+
     console.log('\n--- a transient 401 must NOT log you out ---');
     {
         // /api/contacts fails once, as if the server blipped right after signup.

@@ -82,7 +82,11 @@ async function tokenStillValid(t) {
 
 async function api(path, options = {}) {
     const opts = { ...options, headers: { ...(options.headers || {}) } };
-    const t = token();
+    // Signing in or registering is not an authenticated action. Never attach a
+    // stale token to it: the server would reject the request and we would
+    // report "session expired" instead of the real reason (e.g. wrong password).
+    const isAuthCall = path.startsWith('/api/auth/');
+    const t = isAuthCall ? null : token();
     if (t) opts.headers.Authorization = `Bearer ${t}`;
     if (opts.body && !(opts.body instanceof FormData)) {
         opts.headers['Content-Type'] = 'application/json';
@@ -96,7 +100,9 @@ async function api(path, options = {}) {
         throw new Error('Network unavailable');
     }
 
-    if (res.status === 401) {
+    // On a login/register call a 401 means bad credentials, so fall through and
+    // surface the server's own message.
+    if (res.status === 401 && !isAuthCall) {
         // Don't tear down the session on a single 401 — a restarted server or a
         // proxy that dropped the Authorization header would log the user out
         // moments after a successful sign-in. Re-verify the token first and
