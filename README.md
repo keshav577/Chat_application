@@ -33,8 +33,11 @@ machine against a single `chat.db` file.
 ```bash
 npm install
 npm start          # http://localhost:3000
-npm run seed       # optional: demo accounts + a sample chat
 ```
+
+On first run — or any time `chat.db` is missing — the demo accounts below are
+created automatically. Run `npm run seed` to recreate them by hand, or set
+`NO_AUTOSEED=1` to start with a completely empty database.
 
 Open <http://localhost:3000>.
 
@@ -44,7 +47,7 @@ new-chat button, and start typing.
 
 ### Demo accounts
 
-Created by `npm run seed`. All use the password `pass1234`:
+All use the password `pass1234`:
 
 | Name              | Phone      |
 |-------------------|------------|
@@ -54,8 +57,8 @@ Created by `npm run seed`. All use the password `pass1234`:
 | Priya Sharma      | 9812345670 |
 | Rahul Verma       | 9812345671 |
 
-These live only in your local `chat.db`. Delete that file to start fresh — the schema
-is recreated automatically on the next launch, then re-run `npm run seed`.
+These live only in your local `chat.db`, which is git-ignored. Delete the file to
+start fresh: the schema and these accounts are recreated on the next launch.
 
 ## Tests
 

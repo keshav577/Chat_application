@@ -16,7 +16,7 @@ const wait = (ms) => new Promise(r => setTimeout(r, ms));
  *  blockStorage - simulate an iframe where localStorage throws
  *  interceptor  - optional (url, hits) => Response | 'reject' | null
  */
-async function boot({ jar = { v: '' }, blockStorage = false, interceptor = null } = {}) {
+async function boot({ jar = { v: '' }, blockStorage = false, interceptor = null, defer = false } = {}) {
     const html = await (await fetch(B + '/')).text();
     const dom = new JSDOM(html, { runScripts: 'outside-only', url: B + '/', pretendToBeVisual: true });
     const w = dom.window;
@@ -63,8 +63,11 @@ async function boot({ jar = { v: '' }, blockStorage = false, interceptor = null 
     w.addEventListener('error', e => errors.push(String(e.message)));
 
     w.eval(await (await fetch(B + '/js/app.js')).text());
-    w.document.dispatchEvent(new w.Event('DOMContentLoaded', { bubbles: true }));
-    await wait(250);
+    // `defer` lets a test attach observers before the app boots.
+    if (!defer) {
+        w.document.dispatchEvent(new w.Event('DOMContentLoaded', { bubbles: true }));
+        await wait(250);
+    }
     return { w, jar, errors };
 }
 
@@ -93,6 +96,43 @@ const unauthorized = () => new Response('{"error":"Session expired"}',
         chk('welcome toast shown', /Welcome/.test(w.document.getElementById('toast').textContent));
         chk('no uncaught errors', errors.length === 0);
         if (errors.length) console.log('   ', errors);
+    }
+
+    console.log('\n--- app must not open and then close again (no flash) ---');
+    {
+        // A saved session whose account no longer exists, e.g. the database was
+        // reset underneath the browser. The app must never appear at all.
+        const jar = { v: 'token=eyJhbGciOiJIUzI1NiJ9.fake.sig; me=' +
+            encodeURIComponent(JSON.stringify({ id: 999999, name: 'Ghost', phone: '1234567890' })) };
+        const { w } = await boot({ jar, defer: true });
+        const app = w.document.getElementById('appScreen');
+        let appAppeared = 0;
+        new w.MutationObserver(() => { if (!app.hidden) appAppeared++; })
+            .observe(app, { attributes: true, attributeFilter: ['hidden'] });
+        w.document.dispatchEvent(new w.Event('DOMContentLoaded', { bubbles: true }));
+        await wait(1600);
+        chk('app never flashed into view', appAppeared === 0);
+        chk('ends on the login screen', app.hidden === true);
+        chk('dead session cleared', !/fake\.sig/.test(jar.v));
+    }
+
+    console.log('\n--- a valid saved session opens without showing the login form ---');
+    {
+        const phone = rnd();
+        const reg = await (await fetch(B + '/api/auth/register', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone, name: 'Resume Tester', password: 'pass1234' })
+        })).json();
+        const jar = { v: `token=${reg.token}; me=${encodeURIComponent(JSON.stringify(reg.user))}` };
+        const { w } = await boot({ jar, defer: true });
+        const auth = w.document.getElementById('authScreen');
+        let authAppeared = 0;
+        new w.MutationObserver(() => { if (!auth.hidden) authAppeared++; })
+            .observe(auth, { attributes: true, attributeFilter: ['hidden'] });
+        w.document.dispatchEvent(new w.Event('DOMContentLoaded', { bubbles: true }));
+        await wait(1600);
+        chk('resumes straight into the app', signedIn(w));
+        chk('login form never flashed', authAppeared === 0);
     }
 
     console.log('\n--- login errors must not be reported as "session expired" ---');

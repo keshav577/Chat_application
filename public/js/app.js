@@ -247,18 +247,34 @@ async function boot() {
         return;
     }
 
+    // Verify the saved session BEFORE revealing the app. Showing it first and
+    // signing out on a failed check is what made the UI open and then close
+    // again a moment later.
+    $('splash').hidden = false;
+    $('authScreen').hidden = true;
+
+    let me;
+    try {
+        me = await api('/api/me');
+    } catch (err) {
+        $('splash').hidden = true;
+        // signOut() has already reset the UI when the session is genuinely
+        // gone. Anything else (offline, server down) keeps the session and
+        // just returns the user to the sign-in form with the reason.
+        if (err.message !== 'Session expired') {
+            showAuth();
+            toast(err.message, 'err');
+        }
+        return;
+    }
+
+    state.me = me;
+    store.set('me', JSON.stringify(me));
+    $('splash').hidden = true;
     showApp();
     paintMe();
-    try {
-        // Confirm the token is still valid before trusting the cached profile.
-        state.me = await api('/api/me');
-        store.set('me', JSON.stringify(state.me));
-        paintMe();
-        connectSocket();
-        await loadContacts();
-    } catch (err) {
-        if (err.message !== 'Session expired') toast(err.message, 'err');
-    }
+    connectSocket();
+    await loadContacts();
 }
 
 async function authenticate(path, payload, button) {

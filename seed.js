@@ -1,66 +1,88 @@
-/* Creates demo accounts and a sample conversation.  Run:  npm run seed
-   Safe to re-run: existing accounts are skipped. Server must be running. */
+/* Demo accounts and a sample conversation.
+   Run directly:  npm run seed
+   Also imported by server.js to auto-populate an empty database.
+   Writes through db.js, so it does not need the HTTP server to be running. */
 
-const B = process.env.SEED_URL || 'http://localhost:3000';
+const bcrypt = require('bcryptjs');
+const db = require('./db');
+
 const PASSWORD = 'pass1234';
 
 const PEOPLE = [
-    { name: 'Keshav Maheshwari', phone: '1234567890' },
-    { name: 'Alice Johnson',     phone: '9990000001' },
-    { name: 'Bob Singh',         phone: '9990000002' },
-    { name: 'Priya Sharma',      phone: '9812345670' },
-    { name: 'Rahul Verma',       phone: '9812345671' }
+    { name: 'Keshav Maheshwari', phone: '1234567890', about: 'Building ChatConnect' },
+    { name: 'Alice Johnson',     phone: '9990000001', about: 'Available' },
+    { name: 'Bob Singh',         phone: '9990000002', about: 'At work' },
+    { name: 'Priya Sharma',      phone: '9812345670', about: 'Busy' },
+    { name: 'Rahul Verma',       phone: '9812345671', about: 'Available' }
 ];
 
-const post = async (path, body, token) => {
-    const headers = { 'Content-Type': 'application/json' };
-    if (token) headers.Authorization = 'Bearer ' + token;
-    const res = await fetch(B + path, { method: 'POST', headers, body: JSON.stringify(body) });
-    return { status: res.status, body: await res.json().catch(() => ({})) };
-};
+async function conversationFor(a, b) {
+    const [x, y] = a < b ? [a, b] : [b, a];
+    const found = await db.get('SELECT id FROM conversations WHERE user_a = ? AND user_b = ?', [x, y]);
+    if (found) return found.id;
+    const res = await db.run('INSERT INTO conversations (user_a, user_b) VALUES (?, ?)', [x, y]);
+    return res.lastID;
+}
 
-(async () => {
-    try {
-        await fetch(B + '/');
-    } catch {
-        console.error(`Cannot reach ${B} — start the server first with: npm start`);
-        process.exit(1);
-    }
+async function link(a, b) {
+    await db.run('INSERT OR IGNORE INTO contacts (owner_id, contact_id) VALUES (?, ?)', [a, b]);
+    await db.run('INSERT OR IGNORE INTO contacts (owner_id, contact_id) VALUES (?, ?)', [b, a]);
+    return conversationFor(a, b);
+}
 
-    const tokens = {};
+async function seed({ silent = false } = {}) {
+    const log = (m) => { if (!silent) console.log(m); };
+    const hash = bcrypt.hashSync(PASSWORD, 10);
+    const ids = {};
+
     for (const p of PEOPLE) {
-        let r = await post('/api/auth/register', { ...p, password: PASSWORD });
-        if (r.status === 409) {
-            r = await post('/api/auth/login', { phone: p.phone, password: PASSWORD });
-            console.log(`  exists  ${p.name} (${p.phone})`);
-        } else if (r.status === 200) {
-            console.log(`  created ${p.name} (${p.phone})`);
+        const existing = await db.get('SELECT id FROM users WHERE phone = ?', [p.phone]);
+        if (existing) {
+            ids[p.phone] = existing.id;
+            log(`  exists  ${p.name} (${p.phone})`);
         } else {
-            console.log(`  failed  ${p.name}: ${r.body.error || r.status}`);
-            continue;
-        }
-        if (r.body.token) tokens[p.phone] = r.body.token;
-    }
-
-    // Connect Keshav to everyone else.
-    const me = tokens['1234567890'];
-    if (me) {
-        for (const p of PEOPLE.slice(1)) {
-            await post('/api/contacts', { phone: p.phone }, me);
-        }
-        console.log('  linked contacts for Keshav');
-
-        // A short sample exchange so the app is not empty on first open.
-        const alice = tokens['9990000001'];
-        const list = await (await fetch(B + '/api/contacts', { headers: { Authorization: 'Bearer ' + me } })).json();
-        const a = list.find(c => c.phone === '9990000001');
-        if (a && alice) {
-            const meId = JSON.parse(Buffer.from(me.split('.')[1], 'base64').toString()).id;
-            await post('/api/messages', { receiverId: a.contact_id, body: 'Hey Alice! Welcome to ChatConnect 👋', kind: 'text' }, me);
-            await post('/api/messages', { receiverId: meId, body: 'Hi Keshav! This is working great 🎉', kind: 'text' }, alice);
-            console.log('  added a sample conversation');
+            const res = await db.run(
+                'INSERT INTO users (phone, name, password, about) VALUES (?, ?, ?, ?)',
+                [p.phone, p.name, hash, p.about]
+            );
+            ids[p.phone] = res.lastID;
+            log(`  created ${p.name} (${p.phone})`);
         }
     }
 
-    console.log(`\nDone. Sign in with any number above and the password: ${PASSWORD}`);
-})();
+    const me = ids['1234567890'];
+    for (const p of PEOPLE.slice(1)) await link(me, ids[p.phone]);
+    log('  linked contacts');
+
+    // A short sample exchange so the app is not empty on first open.
+    const alice = ids['9990000001'];
+    const convo = await conversationFor(me, alice);
+    const { count } = await db.get('SELECT COUNT(*) AS count FROM messages WHERE conversation_id = ?', [convo]);
+    if (count === 0) {
+        await db.run(
+            `INSERT INTO messages (conversation_id, sender_id, receiver_id, body, kind, created_at)
+             VALUES (?, ?, ?, ?, 'text', datetime('now', '-2 minutes'))`,
+            [convo, me, alice, 'Hey Alice! Welcome to ChatConnect 👋']
+        );
+        await db.run(
+            `INSERT INTO messages (conversation_id, sender_id, receiver_id, body, kind, created_at)
+             VALUES (?, ?, ?, ?, 'text', datetime('now', '-1 minutes'))`,
+            [convo, alice, me, 'Hi Keshav! This is working great 🎉']
+        );
+        log('  added a sample conversation');
+    }
+
+    return ids;
+}
+
+module.exports = { seed, PASSWORD, PEOPLE };
+
+if (require.main === module) {
+    db.init()
+        .then(() => seed())
+        .then(() => {
+            console.log(`\nDone. Sign in with any number above using the password: ${PASSWORD}`);
+            process.exit(0);
+        })
+        .catch((err) => { console.error('Seed failed:', err); process.exit(1); });
+}

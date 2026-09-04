@@ -469,7 +469,20 @@ io.on('connection', async (socket) => {
 // ------------------------------------------------------------------ boot ----
 
 db.init()
-    .then(() => {
+    .then(async () => {
+        // If the database is empty (first run, or the file was lost) create the
+        // demo accounts automatically, so the app is never a dead end.
+        if (process.env.NODE_ENV !== 'test' && process.env.NO_AUTOSEED !== '1') {
+            try {
+                const { count } = await db.get('SELECT COUNT(*) AS count FROM users');
+                if (count === 0) {
+                    await require('./seed').seed({ silent: true });
+                    console.log('[seed] empty database — demo accounts created (password: pass1234)');
+                }
+            } catch (err) {
+                console.warn('[seed] skipped:', err.message);
+            }
+        }
         server.listen(PORT, '0.0.0.0', () => {
             console.log(`ChatConnect running on http://localhost:${PORT}`);
         });

@@ -10,6 +10,17 @@
 <body>
 
 <!-- ============================ AUTH ============================ -->
+<!-- Shown only while a saved session is being verified, so the app never
+     flashes into view and then bounces back to the login form. -->
+<div class="splash" id="splash" hidden>
+    <div class="splash-logo">
+        <svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true">
+            <path fill="currentColor" d="M12 3C6.99 3 3 6.58 3 11c0 2.35 1.14 4.45 2.94 5.88L5 21l4.4-2.3c.83.2 1.7.3 2.6.3 5.01 0 9-3.58 9-8s-3.99-8-9-8z"/>
+        </svg>
+    </div>
+    <div class="spinner" aria-label="Loading"></div>
+</div>
+
 <section class="auth" id="authScreen">
   <div class="auth-card">
     <div class="brand">
