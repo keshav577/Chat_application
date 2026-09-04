@@ -98,8 +98,27 @@ async function api(path, options = {}) {
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g,
     (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const avatarFor = (name, url) => url
-    || `https://ui-avatars.com/api/?name=${encodeURIComponent(name || '?')}&background=00a884&color=05231d&bold=true`;
+// Avatars are generated locally as inline SVG — no external image service.
+const AVATAR_COLORS = ['#00a884', '#0b8ecb', '#7f66ff', '#e5637f', '#e59e37', '#3aa76d', '#c85a9e', '#5b7fd4'];
+
+function initialsOf(name) {
+    const parts = String(name || '?').trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return '?';
+    return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+}
+
+function avatarFor(name, url) {
+    if (url) return url;
+    const label = initialsOf(name);
+    let hash = 0;
+    for (const ch of String(name || '?')) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+    const bg = AVATAR_COLORS[hash % AVATAR_COLORS.length];
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120">` +
+        `<rect width="120" height="120" fill="${bg}"/>` +
+        `<text x="50%" y="50%" dy=".35em" text-anchor="middle" fill="#04231b"` +
+        ` font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="48" font-weight="700">${esc(label)}</text></svg>`;
+    return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}
 
 function toast(message, kind = '') {
     const el = $('toast');
