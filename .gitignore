@@ -1,0 +1,8 @@
+node_modules/
+uploads/*
+!uploads/.gitkeep
+chat.db-wal
+chat.db-shm
+npm-debug.log*
+.DS_Store
+chat.db

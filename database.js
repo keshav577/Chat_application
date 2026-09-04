@@ -1,4 +1,12 @@
-const sqlite3 = require('sqlite3').verbose();
+// Prefer the native `sqlite3` driver; fall back to the built-in `node:sqlite`
+// engine (Node >= 22) when the native module isn't built on this machine.
+let sqlite3;
+try {
+    sqlite3 = require('sqlite3').verbose();
+} catch (e) {
+    console.warn('native sqlite3 unavailable, using built-in node:sqlite engine');
+    sqlite3 = require('./sqlite-compat').verbose();
+}
 const path = require('path');
 
 // Create or open database

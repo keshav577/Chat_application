@@ -24,8 +24,8 @@ const io = socketIo(server, {
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(express.static('public'));
-app.use('/uploads', express.static('uploads'));
+app.use(express.static(path.join(__dirname, 'public')));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Session configuration
 app.use(session({
@@ -42,7 +42,7 @@ app.use(session({
 // Rate limiting
 const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 5, // 5 requests
+    max: process.env.NODE_ENV === 'production' ? 5 : 100,
     message: 'Too many attempts, please try again later'
 });
 
@@ -652,8 +652,13 @@ io.on('connection', (socket) => {
     });
 });
 
+// Serve the chat UI
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
 // Start server
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);
 });
