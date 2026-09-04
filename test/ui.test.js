@@ -135,6 +135,20 @@ const unauthorized = () => new Response('{"error":"Session expired"}',
         chk('login form never flashed', authAppeared === 0);
     }
 
+    console.log('\n--- socket must be able to reconnect (app opened then went dead) ---');
+    {
+        const src = await (await fetch(B + '/js/app.js')).text();
+        // Socket.IO reuses the auth payload on every reconnect. Capturing the
+        // token once means the socket can never re-authenticate after the
+        // server restarts, which left the app open but permanently dead.
+        chk('auth token is read per-attempt, not captured once',
+            /auth:\s*\(cb\)\s*=>\s*cb\(\{\s*token:\s*token\(\)/.test(src));
+        chk('reconnection is not capped', /reconnectionAttempts:\s*Infinity/.test(src));
+        chk('reconnect refreshes contacts', /socket\.on\('connect'[\s\S]{0,400}loadContacts\(\)/.test(src));
+        chk('outage is shown to the user', /socket\.on\('disconnect'[\s\S]{0,300}offlineBar/.test(src));
+        chk('offline banner exists', (await (await fetch(B + '/')).text()).includes('id="offlineBar"'));
+    }
+
     console.log('\n--- login errors must not be reported as "session expired" ---');
     {
         // Seed an account, then sign in with the wrong password.

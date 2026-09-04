@@ -330,10 +330,43 @@ function paintMe() {
 function connectSocket() {
     if (state.socket) { try { state.socket.disconnect(); } catch {} }
 
-    const socket = io({ auth: { token: token() } });
+    // Read the token via a callback rather than capturing it once: Socket.IO
+    // reuses the auth payload on every reconnect, so a captured value goes
+    // stale and the socket can never authenticate again after a server
+    // restart — leaving the app connected-looking but permanently dead.
+    const socket = io({
+        auth: (cb) => cb({ token: token() }),
+        reconnectionAttempts: Infinity,
+        reconnectionDelayMax: 5000
+    });
     state.socket = socket;
 
-    socket.on('connect_error', () => { /* transport retries automatically */ });
+    socket.on('connect', () => {
+        $('offlineBar').hidden = true;
+        // Catch up on anything missed while the connection was down.
+        if (state.me) {
+            loadContacts();
+            if (state.conversationId) refreshOpenChat();
+        }
+    });
+
+    socket.on('disconnect', (reason) => {
+        // A deliberate client-side disconnect (sign-out) is not an outage.
+        if (reason !== 'io client disconnect') $('offlineBar').hidden = false;
+    });
+
+    socket.on('connect_error', async (err) => {
+        $('offlineBar').hidden = false;
+        // Only give up if the token is genuinely rejected. Anything else is a
+        // transient transport problem and Socket.IO keeps retrying.
+        if (err && err.message === 'unauthorized') {
+            const t = token();
+            if (!t || !(await tokenStillValid(t))) {
+                socket.close();
+                signOut(true);
+            }
+        }
+    });
 
     socket.on('presence:bulk', (ids) => {
         state.onlineIds = new Set(ids);
@@ -454,6 +487,18 @@ function renderChatList() {
 }
 
 // ------------------------------------------------------------- chat ----
+
+// Silently re-pulls the open conversation after a reconnect so no message
+// sent while offline is missing. Failures are ignored: the chat on screen
+// stays exactly as it is.
+async function refreshOpenChat() {
+    const convo = state.conversationId;
+    if (!convo) return;
+    try {
+        const list = await api(`/api/messages/${convo}`);
+        if (state.conversationId === convo) renderMessages(list);
+    } catch { /* keep what is already displayed */ }
+}
 
 async function openChat(contact) {
     state.peer = contact;
