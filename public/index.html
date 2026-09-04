@@ -78,7 +78,7 @@
     <!-- Main Chat Interface -->
     <div class="chat-interface" id="chatInterface" style="display: none;">
         <!-- Sidebar -->
-        <aside class="sidebar">
+        <aside class="sidebar" id="sidebar">
             <header class="sidebar-header">
                 <div class="user-profile">
                     <img src="" alt="Profile" class="profile-img" id="profileImg">
@@ -135,6 +135,7 @@
             <div class="chat-view" id="chatView" style="display: none;">
                 <header class="chat-header">
                     <div class="chat-info">
+                        <button class="btn-icon back-button" onclick="goBackToContacts()" title="Back">←</button>
                         <img src="" alt="Contact" class="contact-img" id="contactImg">
                         <div class="contact-details">
                             <h3 id="contactName">Contact Name</h3>

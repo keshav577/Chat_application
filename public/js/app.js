@@ -230,6 +230,13 @@ async function initializeChat() {
     await loadContacts();
     connectSocket();
     initializeSocketEvents();
+    if (window.matchMedia('(max-width: 768px)').matches) {
+        document.getElementById('sidebar').classList.add('open');
+    }
+}
+
+function isMobileView() {
+    return window.matchMedia('(max-width: 768px)').matches;
 }
 
 function updateUserProfile() {
@@ -482,8 +489,23 @@ async function openConversation(contact) {
         }
     });
     
+    // Slide the contact list away on mobile so the chat fills the screen.
+    if (isMobileView()) {
+        document.getElementById('sidebar').classList.remove('open');
+    }
+    
     // Focus on message input
     document.getElementById('messageInput').focus();
+}
+
+function goBackToContacts() {
+    document.getElementById('chatView').style.display = 'none';
+    document.getElementById('welcomeScreen').style.display = 'flex';
+    currentConversation = null;
+    currentContact = null;
+    if (isMobileView()) {
+        document.getElementById('sidebar').classList.add('open');
+    }
 }
 
 async function loadMessages() {
